@@ -329,7 +329,14 @@
   const ctIOS = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.clevertap;
   const inApp = !!(ctAndroid || ctIOS);
 
+  // The CleverTap LIVE project is at its 512 event-name limit and drops any new name, so only the
+  // existing "Spin Wheel Viewed" and "Spin Wheel Result" are used. Every other step is sent as
+  // "Spin Wheel Result" with action = spun | result | won | claimed | code_copied | closed | not_shown | not_eligible.
   function trackEvent(name, props) {
+    if (name !== 'Spin Wheel Viewed') {
+      props = Object.assign({ action: name.replace('Spin Wheel ', '').toLowerCase().replace(/ /g, '_') }, props || {});
+      name = 'Spin Wheel Result';
+    }
     try {
       if (ctAndroid && ctAndroid.pushEvent) {
         if (props) ctAndroid.pushEvent(name, JSON.stringify(props)); else ctAndroid.pushEvent(name);

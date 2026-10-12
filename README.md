@@ -34,12 +34,15 @@ Before showing the wheel the popup asks the server (`/api/status`) whether this 
 
 ### CleverTap campaign setup (do this - it is the main control)
 
-- **Exclude recent winners:** target audience -> exclude users who did `Spin Wheel Won` in the last
-  N days, where N = "Winner cooldown (days)" in the admin panel.
+- **Exclude recent winners:** target audience -> exclude users who did `Spin Wheel Result` with
+  `action` = `won` in the last N days, where N = "Winner cooldown (days)" in the admin panel.
 - **Match the schedule:** set the campaign's start/end date and delivery days/hours to the admin
   "Campaign schedule", so the popup isn't triggered outside it (a silent close may still count as an impression).
-- Events sent by the popup: `Spin Wheel Viewed`, `Spun`, `Result`, `Won`, `Claimed`, `Code Copied`,
-  `Closed`, `Not Shown` (paused/schedule), `Not Eligible` (won/limit).
+- Events sent by the popup: only two event names, because the CleverTap LIVE project is at its 512
+  event-name limit and silently drops new names. `Spin Wheel Viewed` when the popup opens; every other step is
+  `Spin Wheel Result` with an `action` property: `spun`, `result` (has `won`, `reward`), `won` (has
+  `voucher_code`, `reward`, `voucher_value`), `claimed`, `code_copied`, `closed`, `not_shown` (paused/schedule),
+  `not_eligible` (won/limit). Funnel: Viewed -> Result[action=spun] -> Result[action=won] -> Result[action=claimed].
 
 ## Games & Template Studio
 
