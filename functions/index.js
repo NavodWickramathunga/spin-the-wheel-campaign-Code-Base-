@@ -24,6 +24,7 @@ const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || '';
 const TZ_OFFSET_MIN = Number(process.env.TZ_OFFSET_MIN || 330); // Sri Lanka = UTC+5:30
 const DAY_MS = 86400000;
+const MIN_SPIN_GAP_MS = 10000; // per customer; see /api/spin
 // schedule: when the wheel can be spun, in local (Sri Lanka) time. days: 0 = Sun ... 6 = Sat.
 // Empty dates / times mean "no limit"; to = "00:00" means until midnight.
 const DEFAULT_SCHEDULE = { enabled: false, start_date: '', end_date: '', days: [0, 1, 2, 3, 4, 5, 6], from: '', to: '' };
@@ -256,6 +257,12 @@ app.post('/api/spin', async (req, res) => {
       const gate = customerGate(s, now, winnerSnap.data(), spinnerSnap.data());
       if (!gate.open) return { status: 403, body: { error: gate.message, closed: true } };
       if (!gate.eligible) return { status: 403, body: { error: gate.message, ineligible: true } };
+      // A second spin this soon is a duplicate (two popups open, or a request sent twice), never a real player:
+      // one spin animation alone takes longer. Without this a short cooldown lets both win.
+      const last = spinnerSnap.data()?.last_spin_at;
+      if (last && now - new Date(last) < MIN_SPIN_GAP_MS) {
+        return { status: 429, body: { error: 'You just played. Please close this and try again in a moment.', ineligible: true } };
+      }
 
       const rewards = rewardSnap.docs.map(rewardRow).sort(byOrder);
       const noWin = rewards.find((r) => r.is_no_win);
