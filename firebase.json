@@ -3,6 +3,9 @@
     "site": "stw-spin-wheel-1443",
     "public": "public",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      { "source": "**/*.@(html|js|css)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+    ],
     "rewrites": [
       { "source": "/api/**", "function": { "functionId": "api", "region": "asia-southeast1" } }
     ]
