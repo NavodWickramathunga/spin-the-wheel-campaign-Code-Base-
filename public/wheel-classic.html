@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+  // -------------------- Configurable Settings --------------------
+  const CONFIG = {
+    includeDismissButton: true,
+    // Card background (used by both the wheel screen and the result screen).
+    background: "linear-gradient(165deg, #FF3D8B 0%, #A12CF2 38%, #5B14D0 72%, #2B0B86 100%)",
+    enableConfettiOnWin: true,
+    spinDurationSeconds: 5,
+    // Small pill above the title. Leave "" to hide it.
+    badgeText: "✨ 1 Free Spin",
+    spinButton: { text: "Spin Now", background: "linear-gradient(180deg, #FFEB9C 0%, #FFC83D 55%, #F5A300 100%)", color: "#4A1C00" },
+    // url: leave "" to just close the popup (the code is already shown and saved), or set a deep link to open a screen.
+    claimButton: { enabled: true, text: "Collect Now", background: "linear-gradient(180deg, #FF6BA4 0%, #F4357D 55%, #D81B63 100%)", color: "#ffffff", url: "" },
+    // CleverTap closes the popup for any wzrk:// link (note: wzrk, not wzkr).
+    closeUrl: "wzrk://close",
+    // After "Better luck next time" the popup closes by itself after this many seconds (0 = show a Close button instead).
+    autoCloseNoWinSeconds: 3,
+    // Backend address. Leave "" when this page is served by the same server (browser testing).
+    // For CleverTap custom HTML set the full public HTTPS URL, e.g. "https://stw.example.com".
+    apiBase: "https://stw-spin-wheel-1443.web.app",
+    // The customer's CleverTap Identity (their mobile number). Put the Identity value between the quotes.
+    // If left empty or still an unreplaced placeholder, the page falls back to ?identity= in the URL.
+    identity: "{{Profile.Identity | default: '#'}}",
+    // Wrap words in <span class='hl'>...</span> to give them the gold highlight.
+    mainTitle: { text: "🎉 Spin the Wheel <br><span class='hl'>& Win Big!</span>", fontSize: "26px", color: "#ffffff" },
+    subtitle: { text: "Your chance to score discounts, free gifts, and exclusive perks is just a spin away.", fontSize: "14px", color: "#F3E8FF" },
+    copyInstruction: { color: "#7A6A99", copiedColor: "#16A34A" },
+    // Centre hub of the wheel (gold ring with this colour inside).
+    centerCircle: { color: "#7C3AED", borderColor: "#2B2B2B33", borderWidth: 2, radius: 15 },
+    segmentColours: ["#FFFFFF", "#FF3D6E", "#FFC23D", "#2EC5FF"],
+    noWinColour: "#4B2E83",
+    // When opened outside the app with no identity (CleverTap dashboard preview, desktop browser),
+    // let the wheel do a local demo spin. Nothing is sent to the server and no voucher is issued.
+    previewModeOutsideApp: true,
+    // Shown instantly while the live rewards load from the server (the wheel then updates itself).
+    // Keep this in line with the admin "Wheel segments" so the first view matches.
+    defaultSegments: [
+      { name: "Better luck next time", isNoWin: true },
+      { name: "Rs. 500 Voucher", isNoWin: false },
+      { name: "5GB Data", isNoWin: false },
+      { name: "Free Coffee", isNoWin: false },
+      { name: "Rs. 100 Reload", isNoWin: false },
+    ],
+    // The server can be slow on a cold start, so rewards are retried before giving up.
+    rewardsLoadAttempts: 3,
+    requestTimeoutSeconds: 12,
+  };
+  // -------------------- End of Configurable Settings --------------------
+  // Hide the popup until the server confirms this customer can play (no flash before a silent close).
+  // Safety net: it is shown anyway after 4 seconds.
+  (function () {
+    var id = String(CONFIG.identity || '').trim(), q = new URLSearchParams(location.search);
+    if ((id && !/[{}#]/.test(id)) || q.get('identity') || q.get('mobile')) {
+      document.documentElement.classList.add('stw-gate');
+      setTimeout(function () { document.documentElement.classList.remove('stw-gate'); }, 4000);
+    }
+  })();
+</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Spin the Wheel – Win Big!</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  html.stw-gate body { visibility: hidden; }
+  :root {
+    --spin-duration: 5;
+    --font: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --gold-hi: #FFF1B0; --gold: #F7BE2E; --gold-lo: #B8740A;
+    --wheel: clamp(200px, min(272px, 46vh, 80vw), 272px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; width: 100%; margin: 0; display: flex; align-items: center; justify-content: center;
+    background: transparent; font-family: var(--font); -webkit-tap-highlight-color: transparent; -webkit-font-smoothing: antialiased; }
+
+  /* ---------- card ---------- */
+  .modal { position: relative; isolation: isolate; overflow: hidden; display: flex; flex-direction: column; align-items: center;
+    justify-content: space-evenly; width: 100%; max-width: 330px; height: 100%; max-height: 590px; padding: 0 22px;
+    color: #fff; text-align: center; border-radius: 32px;
+    background: linear-gradient(165deg, #FF3D8B 0%, #A12CF2 38%, #5B14D0 72%, #2B0B86 100%);
+    box-shadow: 0 30px 60px -20px rgba(30, 0, 80, .7);
+    animation: modalIn .7s cubic-bezier(.2, 1.25, .35, 1) both; }
+  .modal::before { content: ""; position: absolute; inset: -45%; z-index: -1; pointer-events: none;
+    background: radial-gradient(closest-side at 30% 35%, rgba(255, 120, 210, .45), transparent),
+                radial-gradient(closest-side at 72% 66%, rgba(80, 170, 255, .38), transparent);
+    animation: aurora 18s linear infinite; }
+  .modal::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2), inset 0 1px 0 rgba(255, 255, 255, .4); }
+  .modal.leaving { animation: modalOut .32s ease-in forwards; }
+  .modal.reward { height: auto; max-height: none; justify-content: center; gap: 14px; padding: 46px 24px 34px; }
+
+  @keyframes modalIn { from { opacity: 0; transform: translateY(28px) scale(.9); } to { opacity: 1; transform: none; } }
+  @keyframes modalOut { to { opacity: 0; transform: scale(.92) translateY(10px); filter: blur(2px); } }
+  @keyframes aurora { to { transform: rotate(360deg); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+  .reveal { animation: rise .6s cubic-bezier(.2, .9, .3, 1.15) both; animation-delay: var(--d, 0s); }
+
+  /* twinkling stars */
+  .sparkles { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+  .sparkle { position: absolute; border-radius: 50%; background: #fff; box-shadow: 0 0 6px 1px rgba(255, 255, 255, .8);
+    animation: twinkle var(--t, 3s) ease-in-out infinite; animation-delay: var(--d, 0s); opacity: 0; }
+  .sparkle.star { background: none; box-shadow: none; color: #FFF3C4; line-height: 1; text-shadow: 0 0 8px rgba(255, 230, 150, .9); }
+  @keyframes twinkle { 0%, 100% { opacity: 0; transform: scale(.4); } 50% { opacity: .95; transform: scale(1); } }
+
+  /* close */
+  .close-btn { position: absolute; top: 14px; right: 14px; z-index: 6; width: 34px; height: 34px; display: grid; place-items: center;
+    border-radius: 50%; background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .3); color: #fff;
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); text-decoration: none; cursor: pointer;
+    transition: transform .2s, background .2s; animation: rise .5s .5s both; }
+  .close-btn:active { transform: scale(.88); background: rgba(255, 255, 255, .28); }
+  .close-btn svg { width: 14px; height: 14px; }
+
+  /* ---------- heading ---------- */
+  .head { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 26px; }
+  .badge { display: inline-flex; align-items: center; padding: 6px 14px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    letter-spacing: 1.4px; text-transform: uppercase; color: #FFE793; background: rgba(255, 255, 255, .13);
+    border: 1px solid rgba(255, 231, 147, .4); box-shadow: 0 0 18px rgba(255, 214, 102, .25); }
+  .badge:empty { display: none; }
+  h1 { margin: 0; font-size: 26px; font-weight: 800; line-height: 1.15; letter-spacing: -.3px; text-shadow: 0 3px 14px rgba(50, 0, 110, .5); }
+  h1 .hl { background: linear-gradient(180deg, #FFF6CF 0%, #FFD45C 55%, #FFAE00 100%); -webkit-background-clip: text; background-clip: text;
+    color: transparent; filter: drop-shadow(0 2px 6px rgba(255, 170, 0, .35)); }
+  p { margin: 0; font-size: 14px; line-height: 1.5; color: #F3E8FF; font-weight: 500; max-width: 270px; }
+  p.error { color: #FFE08A; font-weight: 600; font-size: 13px; padding: 8px 12px; border-radius: 12px;
+    background: rgba(255, 200, 60, .14); border: 1px solid rgba(255, 214, 102, .45); animation: shake .45s; }
+  @keyframes shake { 20%, 60% { transform: translateX(-5px); } 40%, 80% { transform: translateX(5px); } }
+
+  /* ---------- wheel ---------- */
+  .wheel-container { position: relative; width: var(--wheel); height: var(--wheel); flex-shrink: 0; margin-top: 10px; cursor: pointer; }
+  .wheel-glow { position: absolute; inset: -22px; border-radius: 50%; z-index: 0; pointer-events: none;
+    background: radial-gradient(circle, rgba(255, 214, 102, .55) 0%, rgba(255, 61, 139, .28) 48%, transparent 70%);
+    animation: glowPulse 2.8s ease-in-out infinite; }
+  .wheel-container.spinning .wheel-glow { animation-duration: .7s; }
+  .wheel-container.landed .wheel-glow { animation: glowFlash .9s ease-out 2; }
+  @keyframes glowPulse { 0%, 100% { opacity: .65; transform: scale(.97); } 50% { opacity: 1; transform: scale(1.03); } }
+  @keyframes glowFlash { 0% { opacity: 1; transform: scale(1); } 40% { opacity: 1; transform: scale(1.12); filter: brightness(1.6); } 100% { opacity: .7; transform: scale(1); } }
+
+  .wheel-rim { position: absolute; inset: 0; z-index: 1; border-radius: 50%;
+    background: conic-gradient(from 20deg, #FFE793, #F5B92E, #B8740A, #FFE08A, #F5B92E, #9E6206, #FFE793);
+    box-shadow: 0 16px 32px -8px rgba(20, 0, 60, .7), inset 0 0 0 2px rgba(255, 255, 255, .45), inset 0 -4px 10px rgba(80, 40, 0, .5); }
+  .wheel-face { position: absolute; inset: 14px; border-radius: 50%; overflow: hidden; background: #2B0B86; }
+  .wheel-face.idle { animation: nudge 4.5s ease-in-out 1.6s infinite; }
+  @keyframes nudge { 0%, 78%, 100% { transform: rotate(0); } 84% { transform: rotate(-7deg); } 91% { transform: rotate(4deg); } 96% { transform: rotate(-1.5deg); } }
+  canvas#wheelCanvas { display: block; width: 100%; height: 100%; border-radius: 50%; transform: rotate(0deg); will-change: transform;
+    transition: transform calc(var(--spin-duration) * 1s) cubic-bezier(0.01, 0.05, 0.05, 1); }
+  .wheel-gloss { position: absolute; inset: 14px; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(120% 80% at 30% 12%, rgba(255, 255, 255, .32) 0%, rgba(255, 255, 255, 0) 45%);
+    box-shadow: inset 0 0 0 3px rgba(120, 60, 0, .35), inset 0 0 24px rgba(20, 0, 50, .4); }
+
+  .bulb { position: absolute; left: 50%; top: 50%; width: 7px; height: 7px; margin: -3.5px; border-radius: 50%;
+    background: #FFF8DC; transform: rotate(var(--a)) translateY(calc(var(--bulb-r, 129px) * -1));
+    box-shadow: 0 0 6px 2px rgba(255, 225, 130, .95); animation: blink 1.4s ease-in-out infinite; }
+  .bulb:nth-of-type(even) { animation-delay: -.7s; }
+  .wheel-container.spinning .bulb { animation-duration: .28s; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; box-shadow: none; } }
+
+  .pointer { position: absolute; top: -18px; left: 50%; width: 34px; height: 44px; margin-left: -17px; z-index: 4;
+    transform-origin: 50% 32%; filter: drop-shadow(0 4px 4px rgba(40, 0, 80, .5)); pointer-events: none; }
+  .pointer svg { width: 100%; height: 100%; display: block; }
+  .pointer.tick { animation: tick .16s ease-out; }
+  .wheel-container.landed .pointer { animation: bounce .7s cubic-bezier(.3, 1.6, .5, 1); }
+  @keyframes tick { 0% { transform: rotate(0); } 35% { transform: rotate(-24deg); } 100% { transform: rotate(0); } }
+  @keyframes bounce { 0% { transform: translateY(0); } 30% { transform: translateY(-9px) scale(1.12); } 100% { transform: none; } }
+
+  .hub { position: absolute; left: 50%; top: 50%; width: 23%; height: 23%; z-index: 3; border-radius: 50%; display: grid; place-items: center;
+    transform: translate(-50%, -50%); background: radial-gradient(circle at 35% 28%, #FFF6C8, #F5B92E 55%, #A86A06);
+    box-shadow: 0 6px 14px rgba(30, 0, 60, .55), inset 0 -3px 6px rgba(120, 60, 0, .5); }
+  .hub::before { content: ""; position: absolute; inset: 15%; border-radius: 50%; background-color: var(--hub, #7C3AED);
+    background-image: radial-gradient(circle at 35% 28%, rgba(255, 255, 255, .5), transparent 60%); box-shadow: inset 0 2px 5px rgba(0, 0, 0, .35); }
+  .hub span { position: relative; font-size: 11px; font-weight: 800; letter-spacing: 1.2px; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
+  .wheel-container:not(.spinning):not(.landed) .hub { animation: hubPulse 1.8s ease-in-out infinite; }
+  @keyframes hubPulse { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.08); } }
+
+  /* ---------- buttons ---------- */
+  .action-btn { position: relative; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; min-width: 210px;
+    padding: 15px 40px; border: 0; border-radius: 999px; font: 800 16px/1 var(--font); letter-spacing: .6px; text-transform: uppercase;
+    text-decoration: none; cursor: pointer; background: #fff; color: #1d1d1d;
+    box-shadow: 0 5px 0 rgba(60, 10, 40, .35), 0 16px 26px -8px rgba(20, 0, 60, .6), inset 0 2px 0 rgba(255, 255, 255, .6);
+    transition: transform .12s, box-shadow .12s, filter .25s, opacity .25s; }
+  .action-btn::before { content: ""; position: absolute; top: 0; bottom: 0; left: -60%; width: 40%; transform: skewX(-20deg);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .75), transparent); animation: shine 3s ease-in-out 1.2s infinite; }
+  .action-btn:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 1px 0 rgba(60, 10, 40, .35), 0 8px 16px -8px rgba(20, 0, 60, .6), inset 0 2px 0 rgba(255, 255, 255, .6); }
+  .action-btn:disabled { cursor: default; filter: saturate(.55) brightness(.92); opacity: .85; }
+  .action-btn:disabled::before { animation: none; }
+  @keyframes shine { 0% { left: -60%; } 45%, 100% { left: 140%; } }
+
+  /* ---------- result ---------- */
+  .reward-hero { position: relative; width: 108px; height: 108px; display: grid; place-items: center; margin-bottom: 2px; }
+  .reward-hero::before { content: ""; position: absolute; inset: 14px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 230, 150, .7), rgba(255, 120, 200, .2) 60%, transparent 72%); }
+  .rays { position: absolute; inset: -34px; border-radius: 50%;
+    background: repeating-conic-gradient(from 0deg, rgba(255, 228, 140, .55) 0deg 9deg, transparent 9deg 24deg);
+    -webkit-mask: radial-gradient(circle, #000 18%, transparent 68%); mask: radial-gradient(circle, #000 18%, transparent 68%);
+    animation: aurora 14s linear infinite; }
+  .hero-icon { position: relative; font-size: 58px; line-height: 1; animation: pop .8s cubic-bezier(.2, 1.6, .4, 1) .15s both, float 3s ease-in-out 1s infinite; }
+  .reward-hero.lose .rays { opacity: .35; filter: grayscale(1); }
+  .reward-hero.lose::before { opacity: .45; }
+  @keyframes pop { from { transform: scale(0) rotate(-25deg); } to { transform: none; } }
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+
+  .reward-title { margin: 0; font-size: 23px; font-weight: 800; line-height: 1.2; }
+  .reward-subtext { font-size: 14px; font-weight: 500; line-height: 1.5; color: #F3E8FF; max-width: 270px; }
+
+  .reward-wrapper { display: none; width: 100%; margin-top: 4px; filter: drop-shadow(0 12px 18px rgba(25, 0, 70, .45)); }
+  .reward-wrapper.visible { display: block; }
+  .reward-box { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    width: 100%; padding: 16px 22px 14px; border-radius: 16px; cursor: pointer; color: #2A1052;
+    background: linear-gradient(180deg, #FFFFFF 0%, #FFF4DE 100%);
+    -webkit-mask: radial-gradient(circle 11px at 0 58%, transparent 98%, #000) left / 51% 100% no-repeat,
+                  radial-gradient(circle 11px at 100% 58%, transparent 98%, #000) right / 51% 100% no-repeat;
+            mask: radial-gradient(circle 11px at 0 58%, transparent 98%, #000) left / 51% 100% no-repeat,
+                  radial-gradient(circle 11px at 100% 58%, transparent 98%, #000) right / 51% 100% no-repeat; }
+  .reward-box::before { content: ""; position: absolute; inset: 7px; border: 1.5px dashed rgba(124, 58, 237, .35); border-radius: 11px; pointer-events: none; }
+  .ticket-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #9B7BD1; }
+  .reward-main { display: flex; align-items: center; justify-content: center; gap: 10px; max-width: 100%; }
+  #rewardText { font: 800 22px/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 2px; color: #5B14D0; word-break: break-all; }
+  .copy-btn { flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 10px; cursor: pointer;
+    background: #F1E8FF; transition: transform .15s, background .2s; }
+  .copy-btn:active { transform: scale(.88); }
+  .copy-btn svg { width: 18px; height: 18px; }
+  .copy-btn .ic-check { display: none; }
+  .reward-box.copied .copy-btn { background: #DCFCE7; }
+  .reward-box.copied .ic-copy { display: none; }
+  .reward-box.copied .ic-check { display: block; animation: pop .4s cubic-bezier(.2, 1.6, .4, 1); }
+  .copy-instruction { font-size: 12px; font-weight: 600; color: #7A6A99; transition: color .2s; }
+  .glint { position: absolute; top: 0; bottom: 0; left: -60%; width: 35%; transform: skewX(-20deg); pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .9), transparent); animation: shine 3.2s ease-in-out 1.4s infinite; }
+  @keyframes pulsate { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+  .pulsate-animation { animation: pulsate 1.4s ease-in-out 1s 3; }
+
+  .countdown { display: none; position: absolute; left: 28px; right: 28px; bottom: 18px; height: 4px; border-radius: 4px;
+    background: rgba(255, 255, 255, .18); overflow: hidden; }
+  .countdown.run { display: block; }
+  .countdown span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #FFE793, #FF6BA4);
+    transform-origin: left; animation: drain var(--dur, 3s) linear forwards; }
+  @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .modal::before, .sparkle, .bulb, .rays, .glint, .action-btn::before, .wheel-glow, .hub, .hero-icon, .wheel-face.idle { animation: none !important; }
+    .sparkle { opacity: .6; }
+  }
+</style>
+</head>
+<body>
+  <div class="modal" id="spinModal">
+    <div class="sparkles"></div>
+    <a class="close-btn" href="wzrk://close" aria-label="Close">
+      <svg viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </a>
+    <div class="head">
+      <span class="badge reveal" id="badge" style="--d:.15s"></span>
+      <h1 class="title reveal" id="mainTitle" style="--d:.25s"></h1>
+    </div>
+    <p id="subtitle" class="reveal" style="--d:.35s"></p>
+    <div class="wheel-container reveal" style="--d:.45s">
+      <div class="wheel-glow"></div>
+      <div class="wheel-rim" id="wheelRim">
+        <div class="wheel-face idle" id="wheelFace">
+          <canvas id="wheelCanvas" role="button" tabindex="0" aria-label="Spin the Wheel"></canvas>
+        </div>
+        <div class="wheel-gloss"></div>
+      </div>
+      <div class="pointer" id="pointer">
+        <svg viewBox="0 0 34 44">
+          <defs>
+            <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFF1B0"/><stop offset=".5" stop-color="#F7BE2E"/><stop offset="1" stop-color="#B8740A"/></linearGradient>
+            <radialGradient id="gem" cx=".35" cy=".35" r=".7"><stop offset="0" stop-color="#FFB3D1"/><stop offset=".6" stop-color="#F4357D"/><stop offset="1" stop-color="#A3104A"/></radialGradient>
+          </defs>
+          <path d="M17 43 L5 21 A13 13 0 1 1 29 21 Z" fill="url(#pg)" stroke="#8A5200" stroke-opacity=".55" stroke-width="1"/>
+          <circle cx="17" cy="16" r="6" fill="url(#gem)" stroke="#fff" stroke-opacity=".8" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="hub" id="hub"><span>SPIN</span></div>
+    </div>
+    <button class="action-btn reveal" id="actionButton" style="--d:.55s">Spin Now</button>
+  </div>
+
+  <div class="modal reward" id="rewardModal" style="display:none;">
+    <div class="sparkles"></div>
+    <a class="close-btn" href="wzrk://close" aria-label="Close">
+      <svg viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </a>
+    <div class="reward-hero" id="rewardHero"><div class="rays"></div><div class="hero-icon" id="heroIcon">🎁</div></div>
+    <h1 class="reward-title reveal" id="rewardTitle" style="--d:.3s"></h1>
+    <div id="rewardSubtext" class="reward-subtext reveal" style="--d:.4s"></div>
+    <div class="reward-wrapper reveal" id="rewardWrapper" style="--d:.5s">
+      <div class="reward-box" id="rewardBox">
+        <span class="ticket-label">Your voucher code</span>
+        <div class="reward-main">
+          <span id="rewardText"></span>
+          <button id="copyBtn" class="copy-btn" title="Copy to clipboard" aria-label="Copy code">
+            <svg class="ic-copy" viewBox="0 0 20 21" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M13 13.8444V17.8444C13 18.4444 12.6 18.8444 12 18.8444H3C2.4 18.8444 2 18.4444 2 17.8444V8.84442C2 8.24442 2.4 7.84442 3 7.84442H7V3.84442C7 3.24442 7.4 2.84442 8 2.84442H17C17.6 2.84442 18 3.24442 18 3.84442V12.8444C18 13.4444 17.6 13.8444 17 13.8444H13ZM12 13.8444H8C7.4 13.8444 7 13.4444 7 12.8444V8.84442H3V17.8444H12V13.8444ZM17 3.84442H8V12.8444H17V3.84442Z" fill="#6D28D9"/></svg>
+            <svg class="ic-check" viewBox="0 0 20 20" fill="none"><path d="M4 10.5l4 4 8-9" stroke="#16A34A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div class="copy-instruction" id="copyInstruction">Tap to copy the code</div>
+        <span class="glint"></span>
+      </div>
+    </div>
+    <a class="action-btn reveal" id="claimButton" href="wzrk://close" style="--d:.6s">Collect Now</a>
+    <div class="countdown" id="countdown"><span></span></div>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const spinModal = $('spinModal'), rewardModal = $('rewardModal'), subtitleEl = $('subtitle');
+  const wheelCanvas = $('wheelCanvas'), wheelContainer = document.querySelector('.wheel-container');
+  const wheelRim = $('wheelRim'), wheelFace = $('wheelFace'), pointerEl = $('pointer');
+  const ctx = wheelCanvas.getContext('2d');
+  const spinButton = $('actionButton'), claimButton = $('claimButton');
+  const rewardWrapper = $('rewardWrapper'), rewardBox = $('rewardBox');
+  const copyInstructionEl = $('copyInstruction');
+  const TAU = Math.PI * 2;
+  let segments = [], liveRewards = false, isSpinning = false, hasSpun = false, currentRotation = 0;
+  let closeOnly = false; // this customer can't play now (already won / out of spins): the button just closes
+  let highlightIndex = -1; // segment that won, the others are dimmed after landing
+
+  // ---- CleverTap bridge (Android: window.CleverTap, iOS: webkit message handler) ----
+  const ctAndroid = window.CleverTap;
+  const ctIOS = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.clevertap;
+  const inApp = !!(ctAndroid || ctIOS);
+
+  function trackEvent(name, props) {
+    try {
+      if (ctAndroid && ctAndroid.pushEvent) {
+        if (props) ctAndroid.pushEvent(name, JSON.stringify(props)); else ctAndroid.pushEvent(name);
+      } else if (ctIOS) {
+        ctIOS.postMessage({ action: 'recordEventWithProps', event: name, properties: props || {} });
+      }
+    } catch (e) { /* analytics must never break the game */ }
+  }
+  function pushProfile(props) {
+    try {
+      if (ctAndroid && ctAndroid.pushProfile) ctAndroid.pushProfile(JSON.stringify(props));
+      else if (ctIOS) ctIOS.postMessage({ action: 'profilePush', properties: props });
+    } catch (e) { /* never break the game */ }
+  }
+  // Real wins only: the event triggers the CleverTap push campaign that re-sends the code,
+  // and the profile keeps the last code so it is never lost.
+  function recordWin(data) {
+    if (data.preview || !data.won || !data.voucherCode) return;
+    const props = { voucher_code: String(data.voucherCode), reward: String(data.reward || ''), voucher_value: String(data.voucherValue || '') };
+    trackEvent('Spin Wheel Won', props);
+    pushProfile({ 'STW Last Voucher Code': props.voucher_code, 'STW Last Reward': props.reward, 'STW Last Voucher Value': props.voucher_value });
+  }
+  // Closing is done by the tapped link itself (href = closeUrl): iOS CleverTap only acts on
+  // links the user actually taps, not on location.href set from script. This runs on that tap.
+  // Close from script (iOS CleverTap only acts on a clicked link, so one is clicked).
+  function closePopup() {
+    onCloseTap();
+    const a = document.createElement('a');
+    a.href = CONFIG.closeUrl;
+    document.body.appendChild(a);
+    a.click();
+  }
+  function onCloseTap() {
+    trackEvent('Spin Wheel Closed', { spun: hasSpun });
+    try {
+      if (ctAndroid && ctAndroid.dismissInAppNotification) ctAndroid.dismissInAppNotification();
+    } catch (e) { /* the link still closes it */ }
+  }
+
+  // Identity (mobile number) comes from CleverTap / the MyDialog app link (?identity=...)
+  const cfgIdentity = String(CONFIG.identity || '').trim();
+  const params = new URLSearchParams(location.search);
+  const identity = (cfgIdentity && !/[{}#]/.test(cfgIdentity) ? cfgIdentity : params.get('identity') || params.get('mobile') || '').trim();
+  const previewMode = !identity && !inApp && CONFIG.previewModeOutsideApp;
+
+  // ---- apply config ----
+  spinModal.style.background = CONFIG.background;
+  rewardModal.style.background = CONFIG.background;
+  document.documentElement.style.setProperty('--spin-duration', CONFIG.spinDurationSeconds);
+  $('badge').textContent = CONFIG.badgeText || '';
+  $('mainTitle').innerHTML = CONFIG.mainTitle.text;
+  $('mainTitle').style.fontSize = CONFIG.mainTitle.fontSize;
+  $('mainTitle').style.color = CONFIG.mainTitle.color;
+  subtitleEl.style.fontSize = CONFIG.subtitle.fontSize;
+  subtitleEl.style.color = CONFIG.subtitle.color;
+  copyInstructionEl.style.color = CONFIG.copyInstruction.color;
+  $('hub').style.setProperty('--hub', CONFIG.centerCircle.color);
+  spinButton.textContent = CONFIG.spinButton.text;
+  spinButton.style.background = CONFIG.spinButton.background;
+  spinButton.style.color = CONFIG.spinButton.color;
+  document.querySelectorAll('.close-btn').forEach((b) => {
+    b.href = CONFIG.closeUrl;
+    if (!CONFIG.includeDismissButton) b.style.display = 'none';
+    else b.addEventListener('click', onCloseTap);
+  });
+
+  // ---- decoration: twinkling stars + rim bulbs ----
+  function addSparkles(modal, n) {
+    const box = modal.querySelector('.sparkles'), rnd = (a, b) => Math.random() * (b - a) + a;
+    for (let i = 0; i < n; i++) {
+      const s = document.createElement('span');
+      const star = i % 4 === 0;
+      s.className = 'sparkle' + (star ? ' star' : '');
+      if (star) { s.textContent = '✦'; s.style.fontSize = rnd(9, 15) + 'px'; }
+      else { const d = rnd(2, 4) + 'px'; s.style.width = d; s.style.height = d; }
+      s.style.left = rnd(4, 96) + '%'; s.style.top = rnd(3, 97) + '%';
+      s.style.setProperty('--d', rnd(0, 4).toFixed(2) + 's');
+      s.style.setProperty('--t', rnd(2.2, 4.5).toFixed(2) + 's');
+      box.appendChild(s);
+    }
+  }
+  addSparkles(spinModal, 22);
+  addSparkles(rewardModal, 18);
+  const BULBS = 18;
+  for (let i = 0; i < BULBS; i++) {
+    const b = document.createElement('i');
+    b.className = 'bulb';
+    b.style.setProperty('--a', (i * 360 / BULBS) + 'deg');
+    wheelRim.appendChild(b);
+  }
+
+  function showMessage(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.remove('error'); void subtitleEl.offsetWidth; // replay the shake
+    subtitleEl.classList.add('error');
+  }
+  function showSubtitle(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.remove('error');
+  }
+  function updateSpinButton() {
+    if (closeOnly) { spinButton.disabled = false; spinButton.textContent = 'Close'; return; }
+    spinButton.disabled = isSpinning || hasSpun || !segments.length || !(identity || previewMode);
+    spinButton.textContent = isSpinning ? 'Spinning…' : hasSpun ? 'Good luck!' : CONFIG.spinButton.text;
+  }
+
+  // ---- network ----
+  function fetchJson(url, options) {
+    const ctrl = window.AbortController ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), CONFIG.requestTimeoutSeconds * 1000) : null;
+    return fetch(url, Object.assign({}, options, ctrl ? { signal: ctrl.signal } : {}))
+      .then((resp) => resp.json().catch(() => ({})).then((data) => ({ ok: resp.ok, data: data })))
+      .finally(() => { if (timer) clearTimeout(timer); });
+  }
+
+  // ---- colour helpers ----
+  const isHex = (c) => /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(c));
+  function rgb(hex) {
+    let h = hex.slice(1);
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    const n = parseInt(h, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function shade(hex, amt) {
+    const f = (c) => Math.round(amt < 0 ? c * (1 + amt) : c + (255 - c) * amt);
+    const c = rgb(hex);
+    return 'rgb(' + f(c[0]) + ',' + f(c[1]) + ',' + f(c[2]) + ')';
+  }
+  function isLight(col) {
+    if (!isHex(col)) return false;
+    const c = rgb(col);
+    return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2] > 165;
+  }
+
+  // ---- wheel drawing ----
+  function setupCanvas() {
+    const size = Math.max(140, wheelFace.clientWidth); // layout size, unaffected by the entrance scale animation
+    const dpr = window.devicePixelRatio || 1;
+    wheelCanvas.style.width = wheelCanvas.style.height = size + 'px';
+    wheelCanvas.width = wheelCanvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    wheelCanvas._size = size;
+    wheelContainer.style.setProperty('--bulb-r', (wheelRim.clientWidth / 2 - 7) + 'px');
+  }
+  function colourFor(seg, i) {
+    return seg.isNoWin ? CONFIG.noWinColour : CONFIG.segmentColours[i % CONFIG.segmentColours.length];
+  }
+  // Word-wrap a label, shrinking the font until it fits the segment.
+  function layoutLabel(text, maxW, fs) {
+    for (; ; fs--) {
+      ctx.font = '800 ' + fs + 'px Poppins, -apple-system, "Segoe UI", Roboto, sans-serif';
+      const lines = []; let line = '';
+      text.split(' ').forEach((w) => {
+        const test = line ? line + ' ' + w : w;
+        if (line && ctx.measureText(test).width > maxW) { lines.push(line); line = w; } else line = test;
+      });
+      lines.push(line);
+      const fits = lines.length <= 3 && lines.every((l) => ctx.measureText(l).width <= maxW);
+      if (fits || fs <= 9) return { lines: lines, fs: fs };
+    }
+  }
+  function drawWheel() {
+    if (!segments.length) return;
+    const size = wheelCanvas._size, R = size / 2, arc = TAU / segments.length;
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.translate(R, R);
+    segments.forEach((seg, i) => {
+      const col = colourFor(seg, i), a0 = i * arc;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R, a0, a0 + arc); ctx.closePath();
+      if (isHex(col)) {
+        const g = ctx.createRadialGradient(0, 0, R * 0.12, 0, 0, R);
+        g.addColorStop(0, shade(col, 0.28)); g.addColorStop(0.65, col); g.addColorStop(1, shade(col, -0.2));
+        ctx.fillStyle = g;
+      } else ctx.fillStyle = col;
+      ctx.fill();
+      if (highlightIndex >= 0 && i !== highlightIndex) { ctx.fillStyle = 'rgba(20, 0, 50, .5)'; ctx.fill(); }
+
+      // label
+      ctx.save();
+      ctx.rotate(a0 + arc / 2);
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      const light = isLight(col);
+      ctx.fillStyle = light ? '#3A1460' : '#fff';
+      if (!light) { ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1; }
+      const lab = layoutLabel(seg.name, R * 0.45, Math.max(11, Math.round(size * 0.05)));
+      const lh = lab.fs * 1.12, total = (lab.lines.length - 1) * lh;
+      lab.lines.forEach((l, k) => ctx.fillText(l, R * 0.9, k * lh - total / 2));
+      ctx.restore();
+    });
+    // gold dividers
+    ctx.strokeStyle = 'rgba(255, 220, 120, .95)';
+    ctx.lineWidth = Math.max(1.5, size * 0.009);
+    segments.forEach((_, i) => {
+      ctx.save(); ctx.rotate(i * arc);
+      ctx.beginPath(); ctx.moveTo(R * 0.2, 0); ctx.lineTo(R, 0); ctx.stroke();
+      ctx.beginPath(); ctx.arc(R * 0.93, 0, Math.max(2, size * 0.012), 0, TAU); ctx.fillStyle = '#FFE9A8'; ctx.fill();
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  // ---- spin ----
+  function resultIndex(data) {
+    const n = segments.length;
+    // segmentIndex refers to the server's list, so only trust it when that list is on the wheel.
+    if (liveRewards && Number.isInteger(data.segmentIndex) && data.segmentIndex >= 0 && data.segmentIndex < n &&
+        segments[data.segmentIndex].name === data.reward) return data.segmentIndex;
+    // Server did not send a usable index: find the segment by name, else any segment of the right kind.
+    let i = segments.findIndex((s) => data.won && s.name === data.reward);
+    if (i < 0) i = segments.findIndex((s) => !!s.isNoWin === !data.won);
+    return i < 0 ? 0 : i;
+  }
+
+  function previewResult() {
+    const i = Math.floor(Math.random() * segments.length), seg = segments[i];
+    return seg.isNoWin
+      ? { won: false, segmentIndex: i, preview: true }
+      : { won: true, segmentIndex: i, reward: seg.name, voucherValue: 'PREVIEW', voucherCode: 'PREVIEW-CODE', preview: true };
+  }
+
+  // Pointer flicks each time a divider passes under it (works for both the free spin and the CSS ease-out).
+  let watchRaf = 0, lastSeg = null, lastTick = 0;
+  function wheelAngle() {
+    const m = /matrix\(([^)]+)\)/.exec(getComputedStyle(wheelCanvas).transform || '');
+    if (!m) return 0;
+    const p = m[1].split(',');
+    return Math.atan2(parseFloat(p[1]), parseFloat(p[0])) * 180 / Math.PI;
+  }
+  function tickPointer() {
+    pointerEl.classList.remove('tick'); void pointerEl.offsetWidth; pointerEl.classList.add('tick');
+  }
+  function startSpinFx() {
+    wheelFace.classList.remove('idle');
+    wheelContainer.classList.add('spinning');
+    lastSeg = null;
+    cancelAnimationFrame(watchRaf);
+    const step = (t) => {
+      const segDeg = 360 / segments.length;
+      const s = Math.floor((((wheelAngle() + 90) % 360) + 360) % 360 / segDeg);
+      if (lastSeg !== null && s !== lastSeg && t - lastTick > 45) { tickPointer(); lastTick = t; }
+      lastSeg = s;
+      watchRaf = requestAnimationFrame(step);
+    };
+    watchRaf = requestAnimationFrame(step);
+  }
+  function endSpinFx() {
+    cancelAnimationFrame(watchRaf);
+    wheelContainer.classList.remove('spinning');
+  }
+
+  // The wheel starts turning on the tap and keeps turning until the server's result arrives,
+  // then eases out onto the won segment, so a slow server never looks like a frozen button.
+  let freeSpinRaf = 0;
+  function startFreeSpin() {
+    wheelCanvas.style.transition = 'none';
+    let last = performance.now();
+    const step = (t) => {
+      currentRotation += (t - last) * 0.6; // degrees per ms
+      last = t;
+      wheelCanvas.style.transform = 'rotate(' + currentRotation + 'deg)';
+      freeSpinRaf = requestAnimationFrame(step);
+    };
+    freeSpinRaf = requestAnimationFrame(step);
+  }
+  function stopFreeSpin() {
+    cancelAnimationFrame(freeSpinRaf);
+    wheelCanvas.style.transform = 'rotate(' + currentRotation + 'deg)';
+    void wheelCanvas.offsetWidth; // apply the current angle before the CSS transition comes back
+    wheelCanvas.style.transition = '';
+  }
+
+  async function spin() {
+    if (closeOnly) return;
+    if (spinButton.disabled || isSpinning || !segments.length) return;
+    isSpinning = true;
+    updateSpinButton();
+    showSubtitle(CONFIG.subtitle.text);
+    trackEvent('Spin Wheel Spun', { preview: previewMode });
+    startFreeSpin();
+    startSpinFx();
+
+    let data;
+    if (previewMode) {
+      await rewardsReady;
+      data = previewResult();
+    } else {
+      try {
+        // The server decides the result (voucher allocation, caps, 30-day rule); the wheel just animates to it.
+        // Wait for the live rewards too, so segmentIndex matches the wheel being shown.
+        const both = await Promise.all([fetchJson(CONFIG.apiBase + '/api/spin', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: identity }),
+        }), rewardsReady]);
+        const res = both[0];
+        if (!res.ok) {
+          stopFreeSpin(); endSpinFx();
+          if (res.data.closed || res.data.ineligible) closeOnly = true;
+          showMessage(res.data.error || 'Something went wrong. Please try again.');
+          isSpinning = false; updateSpinButton(); return;
+        }
+        data = res.data;
+      } catch (e) {
+        stopFreeSpin(); endSpinFx();
+        showMessage('Network error. Please check your connection and try again.');
+        isSpinning = false; updateSpinButton(); return;
+      }
+    }
+
+    stopFreeSpin();
+    hasSpun = true;
+    const segDeg = 360 / segments.length;
+    const winIndex = resultIndex(data);
+    // Pointer is at the top (canvas angle 270deg); bring the centre of the chosen segment under it.
+    const target = (270 - (winIndex + 0.5) * segDeg + 720) % 360;
+    const cur = ((currentRotation % 360) + 360) % 360;
+    currentRotation += ((target - cur + 360) % 360) + 360 * (4 + Math.floor(Math.random() * 3));
+    let done = false;
+    const finish = () => {
+      if (done) return; done = true;
+      wheelCanvas.removeEventListener('transitionend', finish);
+      isSpinning = false;
+      endSpinFx();
+      highlightIndex = winIndex; drawWheel();
+      wheelContainer.classList.add('landed');
+      showReward(data);
+    };
+    wheelCanvas.addEventListener('transitionend', finish);
+    setTimeout(finish, CONFIG.spinDurationSeconds * 1000 + 800); // fallback
+    wheelCanvas.style.transform = 'rotate(' + currentRotation + 'deg)';
+  }
+
+  function showReward(data) {
+    trackEvent('Spin Wheel Result', { won: !!data.won, reward: data.won ? String(data.reward || '') : 'none', preview: !!data.preview });
+    recordWin(data);
+    const previewNote = data.preview ? ' (Preview only - no real voucher.)' : '';
+    $('rewardTitle').textContent = data.won ? 'Congrats! You just won ' + data.reward + '!' : 'Better luck next time!';
+    $('rewardSubtext').textContent = (data.won
+      ? 'Voucher value: ' + data.voucherValue + '. Use the code below to redeem your reward.' + (data.expiryDate ? ' Valid until ' + data.expiryDate + '.' : '')
+      : 'No reward this time. Thanks for playing!') + previewNote;
+    $('rewardText').textContent = data.voucherCode || '';
+    $('heroIcon').textContent = data.won ? '🎁' : '🍀';
+    $('rewardHero').classList.toggle('lose', !data.won);
+    rewardWrapper.classList.toggle('visible', !!data.won && !!data.voucherCode);
+    if (data.won) rewardBox.classList.add('pulsate-animation');
+    claimButton.textContent = data.won ? CONFIG.claimButton.text : 'Close';
+    claimButton.style.background = CONFIG.claimButton.background;
+    claimButton.style.color = CONFIG.claimButton.color;
+    claimButton.style.display = data.won && !CONFIG.claimButton.enabled ? 'none' : '';
+    // The tap follows this href: a deep link if one is set for winners, otherwise the close link.
+    const openUrl = data.won && CONFIG.claimButton.url;
+    claimButton.href = openUrl || CONFIG.closeUrl;
+    claimButton.onclick = () => {
+      if (data.won) trackEvent('Spin Wheel Claimed', { reward: String(data.reward || ''), preview: !!data.preview });
+      if (!openUrl) onCloseTap();
+    };
+
+    // Let the landed segment glow for a moment, then swap cards.
+    setTimeout(() => {
+      spinModal.classList.add('leaving');
+      setTimeout(() => {
+        spinModal.style.display = 'none';
+        rewardModal.style.display = 'flex';
+        if (!data.won && CONFIG.autoCloseNoWinSeconds > 0) autoCloseNoWin(CONFIG.autoCloseNoWinSeconds);
+        if (data.won && CONFIG.enableConfettiOnWin) setTimeout(fireConfetti, 150);
+      }, 320);
+    }, 1100);
+  }
+
+  // No win: hide the Close button, count down, then close. iOS only closes on a link click,
+  // so the close link is clicked from script; the × stays as a backup.
+  function autoCloseNoWin(seconds) {
+    claimButton.style.display = 'none';
+    const bar = $('countdown');
+    bar.style.setProperty('--dur', seconds + 's');
+    bar.classList.add('run');
+    const sub = $('rewardSubtext'), base = sub.textContent;
+    const tick = () => {
+      if (seconds <= 0) {
+        onCloseTap();
+        const a = document.createElement('a');
+        a.href = CONFIG.closeUrl;
+        document.body.appendChild(a);
+        a.click();
+        return;
+      }
+      sub.textContent = base + ' Closing in ' + seconds + '...';
+      seconds--;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  // ---- copy ----
+  function copyCode() {
+    const text = $('rewardText').textContent;
+    if (!text) return;
+    const ok = () => {
+      copyInstructionEl.textContent = 'Code copied!';
+      copyInstructionEl.style.color = CONFIG.copyInstruction.copiedColor;
+      rewardBox.classList.add('copied');
+      trackEvent('Spin Wheel Code Copied');
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok).catch(() => fallback(text, ok));
+    else fallback(text, ok);
+  }
+  function fallback(text, ok) {
+    const i = document.createElement('input');
+    i.value = text; i.style.position = 'absolute'; i.style.left = '-9999px';
+    document.body.appendChild(i); i.select(); document.execCommand('copy'); i.remove(); ok();
+  }
+  $('copyBtn').addEventListener('click', (e) => { e.stopPropagation(); copyCode(); });
+  rewardWrapper.addEventListener('click', copyCode);
+
+  // ---- confetti: two side cannons, then a burst from the top ----
+  function fireConfetti() {
+    const colors = ['#FFD93D', '#FF3D8B', '#7C4DFF', '#2EC5FF', '#4ADE80', '#FFFFFF', '#FF8A3D'];
+    const c = document.createElement('canvas');
+    Object.assign(c.style, { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 9999 });
+    document.body.appendChild(c);
+    const W = innerWidth, H = innerHeight, dpr = Math.min(2, window.devicePixelRatio || 1);
+    c.width = W * dpr; c.height = H * dpr;
+    const g = c.getContext('2d'), rnd = (a, b) => Math.random() * (b - a) + a;
+    g.scale(dpr, dpr);
+    const shapes = ['rect', 'rect', 'circle', 'ribbon'];
+    let ps = [], pending = 1;
+    function burst(x, y, angle, spread, count, power) {
+      for (let k = 0; k < count; k++) {
+        const a = angle + rnd(-spread, spread), v = rnd(power * 0.45, power);
+        const shape = shapes[Math.floor(Math.random() * shapes.length)];
+        ps.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, shape: shape,
+          w: shape === 'ribbon' ? 3 : rnd(6, 10), h: shape === 'ribbon' ? rnd(12, 18) : rnd(8, 13),
+          col: colors[Math.floor(Math.random() * colors.length)], rot: rnd(0, TAU), vr: rnd(-0.25, 0.25),
+          tilt: rnd(0, TAU), vt: rnd(0.06, 0.16), life: 0, ttl: rnd(130, 200) });
+      }
+    }
+    burst(0, H * 0.9, -Math.PI / 3, 0.4, 70, 24);
+    burst(W, H * 0.9, -2 * Math.PI / 3, 0.4, 70, 24);
+    setTimeout(() => { burst(W / 2, H * 0.3, -Math.PI / 2, Math.PI, 60, 11); pending = 0; }, 380);
+    (function frame() {
+      g.clearRect(0, 0, W, H);
+      ps = ps.filter((p) => p.life < p.ttl && p.y < H + 30);
+      ps.forEach((p) => {
+        p.vx *= 0.985; p.vy = p.vy * 0.985 + 0.32;
+        p.x += p.vx + Math.sin(p.tilt) * 0.8; p.y += p.vy;
+        p.rot += p.vr; p.tilt += p.vt; p.life++;
+        g.save();
+        g.globalAlpha = Math.min(1, (p.ttl - p.life) / 40);
+        g.fillStyle = p.col;
+        g.translate(p.x, p.y); g.rotate(p.rot); g.scale(1, Math.cos(p.tilt));
+        if (p.shape === 'circle') { g.beginPath(); g.arc(0, 0, p.w / 2, 0, TAU); g.fill(); }
+        else g.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        g.restore();
+      });
+      ps.length || pending ? requestAnimationFrame(frame) : c.remove();
+    })();
+  }
+
+  spinButton.addEventListener('click', spin);
+  spinButton.addEventListener('click', () => { if (closeOnly) closePopup(); });
+  wheelContainer.addEventListener('click', spin);
+  wheelCanvas.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); spin(); } });
+
+  // ---- init: draw the default segments at once, then swap in the admin-configured rewards ----
+  function setSegments(list) {
+    segments = list.length < 2 ? list.concat(list) : list.slice();
+    drawWheel();
+  }
+  // Resolves when the live rewards are on the wheel, or when all attempts failed (defaults stay).
+  function loadRewards() {
+    return new Promise((resolve) => {
+      (function attempt(n) {
+        fetchJson(CONFIG.apiBase + '/api/rewards')
+          .then((res) => {
+            const list = Array.isArray(res.data) ? res.data.filter((s) => s && s.name) : [];
+            if (!res.ok || !list.length) throw new Error('no rewards');
+            setSegments(list);
+            liveRewards = true;
+            updateSpinButton();
+            resolve();
+          })
+          .catch(() => {
+            if (n < CONFIG.rewardsLoadAttempts) setTimeout(() => attempt(n + 1), 1500 * n);
+            else resolve();
+          });
+      })(1);
+    });
+  }
+
+  setupCanvas();
+  setSegments((CONFIG.defaultSegments || []).filter((s) => s && s.name));
+  if (window.ResizeObserver) new ResizeObserver(() => { setupCanvas(); drawWheel(); }).observe(wheelContainer);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawWheel); // redraw labels once Poppins loads
+  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text + (previewMode ? ' (Preview mode)' : ''));
+  else showMessage('Please open this page from the MyDialog app to spin the wheel.');
+  updateSpinButton();
+  trackEvent('Spin Wheel Viewed', { preview: previewMode });
+  const rewardsReady = loadRewards();
+  // Campaign schedule: show "closed, opens at ..." up front instead of after a tap.
+  // Status gate (the page stays hidden until this answers, at most 4 s - see the top of the file):
+  // paused / outside the schedule -> close without showing anything;
+  // already won / out of spins -> show why, and the button just closes.
+  const reveal = () => document.documentElement.classList.remove('stw-gate');
+  if (identity && !previewMode) {
+    fetchJson(CONFIG.apiBase + '/api/status?identity=' + encodeURIComponent(identity)).then((res) => {
+      const st = res.ok && res.data ? res.data : {};
+      if (isSpinning || hasSpun) return reveal();
+      if (st.open === false) {
+        trackEvent('Spin Wheel Not Shown', { reason: st.paused ? 'paused' : 'schedule' });
+        return closePopup();
+      }
+      if (st.eligible === false) {
+        trackEvent('Spin Wheel Not Eligible', { reason: String(st.reason || '') });
+        closeOnly = true;
+        showMessage(st.message || "You can't spin right now.");
+        updateSpinButton();
+      }
+      reveal();
+    }).catch(reveal); // server unreachable: show the wheel; the spin itself is still checked
+  } else reveal();
+})();
+</script>
+</body>
+</html>

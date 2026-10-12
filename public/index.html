@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+  // -------------------- Configurable Settings --------------------
+  const CONFIG = {
+    includeDismissButton: true,
+    background: "linear-gradient(180deg, #FF3672 0%, #8332F9 46.63%, #6708BC 84.62%, #4E15DD 100%)",
+    enableConfettiOnWin: true,
+    spinDurationSeconds: 5,
+    spinButton: { text: "Spin Now", background: "#ffffff", color: "#1d1d1d" },
+    claimButton: { enabled: true, text: "Collect Now", background: "#F4357D", color: "#ffffff", url: "wzkr://thisleadstonowhere" },
+    closeUrl: "wzkr://thisleadstonowhere",
+    // Backend address. Leave "" when this page is served by the same server (browser testing).
+    // For CleverTap custom HTML set the full public HTTPS URL, e.g. "https://stw.example.com".
+    apiBase: "https://stw-spin-wheel-1443.web.app",
+    // The customer's CleverTap Identity (their mobile number). Put the Identity value between the quotes.
+    // If left empty or still an unreplaced placeholder, the page falls back to ?identity= in the URL.
+    identity: "",
+    mainTitle: { text: "🎉 Spin the Wheel <br>& Win Big!", fontSize: "24px", color: "#ffffff" },
+    subtitle: { text: "Your chance to score discounts, free gifts, and exclusive perks is just a spin away.", fontSize: "14px", color: "#e8f5ff" },
+    copyInstruction: { color: "#606060", copiedColor: "#F4357D" },
+    centerCircle: { color: "#914DFF", borderColor: "#2B2B2B33", borderWidth: 2, radius: 15 },
+    segmentColours: ["#ffffff", "#fc2b46", "#E3B316"],
+    noWinColour: "#7a6a99",
+  };
+  // -------------------- End of Configurable Settings --------------------
+</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Spin the Wheel – Win Big!</title>
+<style>
+  :root { --spin-duration: 5; --shimmer-hue-1: 337deg; --shimmer-hue-2: 337deg; }
+  @property --mask { syntax: "<angle>"; inherits: false; initial-value: 33deg; }
+  @keyframes spin { 0% { --mask: 0deg; } 100% { --mask: 360deg; } }
+  html, body { height: 100%; width: 100%; margin: 0; display: flex; align-items: center; justify-content: space-evenly;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; }
+  .modal { display: flex; flex-direction: column; align-items: center; height: 100%; max-height: 580px; max-width: 320px;
+    padding: 0 5%; justify-content: space-evenly; width: 100%; color: #fff; text-align: center;
+    background: linear-gradient(180deg, #FF4ECD 0%, #8E2DE2 100%); border-radius: 36px; position: relative; box-sizing: border-box; overflow: hidden; }
+  .modal.reward { background: #50346ACC; max-height: 455px; }
+  .title, .reward-title { margin-top: 30px; }
+  .reward-title { font-size: 24px; font-weight: 700; margin-bottom: 0; }
+  .close-btn { position: absolute; top: 18px; right: 18px; appearance: none; border: 0; background: none; color: #fff; font-size: 32px; line-height: 1; cursor: pointer; }
+  h1 { margin: 0; font-size: 24px; font-weight: 700; }
+  p { margin: 0; font-size: 14px; line-height: 1.45; color: #e8f5ff; }
+  p.error { color: #ffe08a; font-weight: 600; }
+  .wheel-container { position: relative; width: clamp(200px, min(260px, 45vh, 80vw), 260px); height: clamp(200px, min(260px, 45vh, 80vw), 260px);
+    max-width: 260px; max-height: 260px; aspect-ratio: 1; margin: 10px auto 0; }
+  canvas#wheelCanvas { width: 100%; height: 100%; border-radius: 50%; border: 8px solid #1E3DD84D; transform: rotate(0deg);
+    transition: transform calc(var(--spin-duration) * 1s) cubic-bezier(0.01, 0.05, 0.05, 1); box-sizing: border-box; }
+  .pointer { position: absolute; top: -14px; left: 50%; transform: translateX(-50%); width: 24px; height: 18px; z-index: 2; }
+  .pointer::before { content: ''; position: absolute; width: 100%; height: 100%; background: linear-gradient(0deg, #C68D07 0%, #FFD724 100%);
+    border: 2px solid #2B2B2B0D; clip-path: polygon(50% 100%, 0% 0%, 100% 0%); filter: drop-shadow(0 0 6px rgba(0,0,0,.2)); }
+  .reward-wrapper { display: none; width: 100%; position: relative; border-radius: 18px; overflow: visible; }
+  .reward-wrapper.visible { display: block; }
+  .reward-box { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 0; background: #fff; color: #1d1d1d;
+    border-radius: 18px; width: 100%; box-sizing: border-box; cursor: pointer; }
+  .reward-main { font-size: 24px; font-weight: 700; word-break: break-all; padding: 0 10px; }
+  .reward-subtext { padding: 0 10px; font-size: 14px; font-weight: 500; }
+  .copy-instruction { font-weight: 500; font-size: 14px; line-height: 100%; text-align: center; color: #606060; }
+  .copy-btn { display: inline; appearance: none; border: none; background: none; cursor: pointer; font-size: 24px; line-height: 1; color: #1d1d1d; }
+  .action-btn { width: fit-content; padding: 12.5px 40px; border: none; border-radius: 14px; background: #fff; color: #1d1d1d; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .action-btn:disabled { opacity: .6; cursor: default; }
+  @keyframes pulsate { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  .pulsate-animation { animation: pulsate 1.5s 3; }
+  .shimmer { position: absolute; inset: -40px; border-radius: inherit; mix-blend-mode: plus-lighter; pointer-events: none;
+    mask-image: conic-gradient(from var(--mask, 0deg), transparent 0%, transparent 10%, black 36%, black 45%, transparent 50%, transparent 60%, black 85%, black 95%, transparent 100%);
+    mask-size: cover; animation: spin 3s linear infinite both -0.5s; z-index: 10; }
+  .shimmer::before { content: ""; border-radius: inherit; position: absolute; inset: 40px; z-index: -1;
+    box-shadow: 0 0 2px 1px hsl(var(--shimmer-hue-1) 90% 58%), 0 0 9px 6px hsl(var(--shimmer-hue-2) 70% 60%); }
+</style>
+</head>
+<body>
+  <div class="modal" id="spinModal">
+    <button class="close-btn" aria-label="Close">×</button>
+    <h1 class="title" id="mainTitle"></h1>
+    <p id="subtitle"></p>
+    <div class="wheel-container">
+      <div class="pointer"></div>
+      <canvas id="wheelCanvas" role="button" tabindex="0" aria-label="Spin the Wheel"></canvas>
+    </div>
+    <button class="action-btn" id="actionButton">Spin Now</button>
+  </div>
+
+  <div class="modal reward" id="rewardModal" style="display:none;">
+    <button class="close-btn" aria-label="Close">×</button>
+    <h1 class="reward-title" id="rewardTitle"></h1>
+    <div id="rewardSubtext" class="reward-subtext"></div>
+    <div class="reward-wrapper" id="rewardWrapper">
+      <span class="shimmer"></span>
+      <div class="reward-box" id="rewardBox">
+        <div class="reward-main">
+          <span id="rewardText"></span>
+          <button id="copyBtn" class="copy-btn" title="Copy to clipboard">
+            <svg width="20" height="21" viewBox="0 0 20 21" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M13 13.8444V17.8444C13 18.4444 12.6 18.8444 12 18.8444H3C2.4 18.8444 2 18.4444 2 17.8444V8.84442C2 8.24442 2.4 7.84442 3 7.84442H7V3.84442C7 3.24442 7.4 2.84442 8 2.84442H17C17.6 2.84442 18 3.24442 18 3.84442V12.8444C18 13.4444 17.6 13.8444 17 13.8444H13ZM12 13.8444H8C7.4 13.8444 7 13.4444 7 12.8444V8.84442H3V17.8444H12V13.8444ZM17 3.84442H8V12.8444H17V3.84442Z" fill="#4A4C4C"/></svg>
+          </button>
+        </div>
+        <div class="copy-instruction" id="copyInstruction">Click here to copy the code!</div>
+      </div>
+    </div>
+    <button class="action-btn" id="claimButton">Collect Now</button>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const spinModal = $('spinModal'), rewardModal = $('rewardModal'), subtitleEl = $('subtitle');
+  const wheelCanvas = $('wheelCanvas'), wheelContainer = document.querySelector('.wheel-container');
+  const ctx = wheelCanvas.getContext('2d');
+  const spinButton = $('actionButton'), claimButton = $('claimButton');
+  const rewardWrapper = $('rewardWrapper'), rewardBox = $('rewardBox');
+  const copyInstructionEl = $('copyInstruction');
+  const TAU = Math.PI * 2;
+  let segments = [], isSpinning = false, currentRotation = 0;
+
+  // Identity (mobile number) comes from CleverTap / the MyDialog app link (?identity=...)
+  const cfgIdentity = String(CONFIG.identity || '').trim();
+  const params = new URLSearchParams(location.search);
+  const identity = (cfgIdentity && !/[{}#]/.test(cfgIdentity) ? cfgIdentity : params.get('identity') || params.get('mobile') || '').trim();
+
+  // ---- apply config ----
+  spinModal.style.background = CONFIG.background;
+  document.documentElement.style.setProperty('--spin-duration', CONFIG.spinDurationSeconds);
+  $('mainTitle').innerHTML = CONFIG.mainTitle.text;
+  $('mainTitle').style.fontSize = CONFIG.mainTitle.fontSize;
+  $('mainTitle').style.color = CONFIG.mainTitle.color;
+  subtitleEl.textContent = CONFIG.subtitle.text;
+  subtitleEl.style.fontSize = CONFIG.subtitle.fontSize;
+  subtitleEl.style.color = CONFIG.subtitle.color;
+  spinButton.textContent = CONFIG.spinButton.text;
+  spinButton.style.background = CONFIG.spinButton.background;
+  spinButton.style.color = CONFIG.spinButton.color;
+  document.querySelectorAll('.close-btn').forEach((b) => {
+    if (!CONFIG.includeDismissButton) b.style.display = 'none';
+    else b.addEventListener('click', () => (location.href = CONFIG.closeUrl));
+  });
+
+  function showMessage(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.add('error');
+  }
+  if (!identity) {
+    showMessage('Please open this page from the MyDialog app to spin the wheel.');
+    spinButton.disabled = true;
+  }
+
+  // ---- wheel drawing ----
+  function setupCanvas() {
+    const size = Math.max(150, wheelContainer.getBoundingClientRect().width - 16);
+    const dpr = window.devicePixelRatio || 1;
+    wheelCanvas.style.width = wheelCanvas.style.height = size + 'px';
+    wheelCanvas.width = wheelCanvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    wheelCanvas._size = size;
+  }
+  function colourFor(seg, i) {
+    return seg.isNoWin ? CONFIG.noWinColour : CONFIG.segmentColours[i % CONFIG.segmentColours.length];
+  }
+  function drawWheel() {
+    if (!segments.length) return;
+    const size = wheelCanvas._size, R = size / 2, arc = TAU / segments.length;
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.translate(R, R);
+    segments.forEach((seg, i) => {
+      const col = colourFor(seg, i);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R, i * arc, (i + 1) * arc); ctx.closePath();
+      ctx.fillStyle = col; ctx.fill();
+      ctx.save();
+      ctx.fillStyle = col.toLowerCase() === '#ffffff' ? '#1d1d1d' : '#fff';
+      ctx.rotate(i * arc + arc / 2);
+      ctx.textAlign = 'right';
+      const fs = Math.max(12, size * 0.05);
+      ctx.font = `bold ${fs}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+      const maxW = R * 0.6, lines = []; let line = '';
+      seg.name.split(' ').forEach((w, k) => {
+        const test = line + w + ' ';
+        if (ctx.measureText(test).width > maxW && k > 0) { lines.push(line); line = w + ' '; } else line = test;
+      });
+      lines.push(line);
+      const lh = fs * 1.1, total = (lines.length - 1) * lh;
+      lines.forEach((l, k) => ctx.fillText(l.trim(), R * 0.96, 4 + k * lh - total / 2));
+      ctx.restore();
+    });
+    const cr = (CONFIG.centerCircle.radius / 260) * size;
+    ctx.beginPath(); ctx.arc(0, 0, cr, 0, TAU);
+    ctx.fillStyle = CONFIG.centerCircle.color; ctx.fill();
+    ctx.strokeStyle = CONFIG.centerCircle.borderColor;
+    ctx.lineWidth = (CONFIG.centerCircle.borderWidth / 260) * size; ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---- spin ----
+  async function spin() {
+    if (isSpinning || !identity || !segments.length) return;
+    isSpinning = true;
+    spinButton.disabled = true;
+    subtitleEl.classList.remove('error');
+    subtitleEl.textContent = CONFIG.subtitle.text;
+    let data;
+    try {
+      // The server decides the result (voucher allocation, caps, 30-day rule); the wheel just animates to it.
+      const resp = await fetch(CONFIG.apiBase + '/api/spin', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity }),
+      });
+      data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { showMessage(data.error || 'Something went wrong.'); isSpinning = false; spinButton.disabled = false; return; }
+    } catch {
+      showMessage('Network error. Please try again.');
+      isSpinning = false; spinButton.disabled = false; return;
+    }
+
+    const segDeg = 360 / segments.length;
+    // Pointer is at the top (canvas angle 270deg); bring the centre of the chosen segment under it.
+    const target = (270 - (data.segmentIndex + 0.5) * segDeg + 720) % 360;
+    const cur = ((currentRotation % 360) + 360) % 360;
+    currentRotation += ((target - cur + 360) % 360) + 360 * (4 + Math.floor(Math.random() * 3));
+    let done = false;
+    const finish = () => { if (done) return; done = true; wheelCanvas.removeEventListener('transitionend', finish); isSpinning = false; showReward(data); };
+    wheelCanvas.addEventListener('transitionend', finish);
+    setTimeout(finish, CONFIG.spinDurationSeconds * 1000 + 800); // fallback
+    wheelCanvas.style.transform = `rotate(${currentRotation}deg)`;
+  }
+
+  function showReward(data) {
+    setTimeout(() => {
+      $('rewardTitle').textContent = data.won ? `Congrats! You just won ${data.reward}!` : 'Better luck next time!';
+      $('rewardSubtext').textContent = data.won
+        ? `Voucher value: ${data.voucherValue}. Use the code below to redeem your reward.`
+        : 'No reward this time. Thanks for playing!';
+      $('rewardText').textContent = data.voucherCode || '';
+      rewardWrapper.classList.toggle('visible', !!data.won);
+      if (data.won) rewardBox.classList.add('pulsate-animation');
+      spinModal.style.display = 'none';
+      rewardModal.style.display = 'flex';
+      claimButton.textContent = data.won ? CONFIG.claimButton.text : 'Close';
+      claimButton.style.background = CONFIG.claimButton.background;
+      claimButton.style.color = CONFIG.claimButton.color;
+      claimButton.style.display = data.won && !CONFIG.claimButton.enabled ? 'none' : '';
+      claimButton.onclick = () => (location.href = data.won ? CONFIG.claimButton.url : CONFIG.closeUrl);
+      if (data.won && CONFIG.enableConfettiOnWin) fireConfetti();
+    }, 1000);
+  }
+
+  // ---- copy ----
+  function copyCode() {
+    const text = $('rewardText').textContent;
+    if (!text) return;
+    const ok = () => { copyInstructionEl.textContent = 'Code copied!'; copyInstructionEl.style.color = CONFIG.copyInstruction.copiedColor; };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(ok).catch(() => fallback(text, ok));
+    else fallback(text, ok);
+  }
+  function fallback(text, ok) {
+    const i = document.createElement('input');
+    i.value = text; i.style.position = 'absolute'; i.style.left = '-9999px';
+    document.body.appendChild(i); i.select(); document.execCommand('copy'); i.remove(); ok();
+  }
+  $('copyBtn').addEventListener('click', (e) => { e.stopPropagation(); copyCode(); });
+  rewardWrapper.addEventListener('click', copyCode);
+
+  // ---- confetti ----
+  function fireConfetti() {
+    const colors = ['#FFC700', '#FF0000', '#2E3192', '#41F4BC', '#943DFF', '#FF61E6'];
+    const c = document.createElement('canvas');
+    Object.assign(c.style, { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 9999 });
+    document.body.appendChild(c);
+    c.width = innerWidth; c.height = innerHeight;
+    const g = c.getContext('2d'), rnd = (a, b) => Math.random() * (b - a) + a;
+    let ps = Array.from({ length: 120 }, () => ({
+      x: c.width / 2, y: c.height * 0.6, w: rnd(6, 12), h: rnd(8, 16), a: rnd(0, 360), va: rnd(3, 7),
+      col: colors[Math.floor(Math.random() * colors.length)], vx: rnd(-9, 9), vy: rnd(-16, -8), o: 1, d: rnd(0.0075, 0.015),
+    }));
+    (function frame() {
+      g.clearRect(0, 0, c.width, c.height);
+      ps = ps.filter((p) => p.o > 0 && p.y < c.height + 20);
+      ps.forEach((p) => {
+        p.x += p.vx; p.y += p.vy; p.vy += 0.3; p.o -= p.d; p.a += p.va;
+        g.save(); g.globalAlpha = Math.max(p.o, 0); g.fillStyle = p.col; g.translate(p.x, p.y); g.rotate(p.a * Math.PI / 180);
+        g.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); g.restore();
+      });
+      ps.length ? requestAnimationFrame(frame) : c.remove();
+    })();
+  }
+
+  spinButton.addEventListener('click', spin);
+  wheelContainer.addEventListener('click', spin);
+
+  // ---- init: segments come from the admin-configured rewards ----
+  fetch(CONFIG.apiBase + '/api/rewards').then((r) => r.json()).then((list) => {
+    if (!Array.isArray(list) || !list.length) throw new Error('no rewards');
+    segments = list.length < 2 ? [...list, ...list] : list;
+    setupCanvas();
+    drawWheel();
+    if (window.ResizeObserver) new ResizeObserver(() => { setupCanvas(); drawWheel(); }).observe(wheelContainer);
+  }).catch(() => {
+    showMessage('The wheel is unavailable right now. Please try again later.');
+    spinButton.disabled = true;
+  });
+})();
+</script>
+</body>
+</html>

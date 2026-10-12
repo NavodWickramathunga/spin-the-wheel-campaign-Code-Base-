@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Secrets
+.env
+.env.*
+
+# Local database
+*.db
+*.db-shm
+*.db-wal
+
+# Logs / caches
+*.log
+.firebase/
+
+# Editor / tooling
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db

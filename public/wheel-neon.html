@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+  // -------------------- Configurable Settings --------------------
+  const CONFIG = {
+    includeDismissButton: true,
+    // Card background (a colour or a gradient). A moving neon border is drawn around it.
+    background: "radial-gradient(120% 90% at 50% 0%, #3B1C8C 0%, #1A0B4F 45%, #0A0626 100%)",
+    neonBorder: ["#22E1FF", "#FF2BD6", "#FFB800", "#8B5CF6"],
+    enableConfettiOnWin: true,
+    spinDurationSeconds: 5,
+    // Sound effects (synthesised, no files), phone vibration and 3D wheel tilt.
+    sound: true,
+    haptics: true,
+    tilt: true,
+    // Small pill above the title. Leave "" to hide it.
+    badgeText: "⚡ 1 Free Spin",
+    spinButton: { text: "Spin Now", background: "linear-gradient(90deg, #FF2BD6 0%, #8B5CF6 50%, #22E1FF 100%)", color: "#ffffff" },
+    // url: leave "" to just close the popup (the code is already shown and saved), or set a deep link to open a screen.
+    claimButton: { enabled: true, text: "Collect Now", background: "linear-gradient(90deg, #FFB800 0%, #FF5E3A 50%, #FF2BD6 100%)", color: "#ffffff", url: "" },
+    // CleverTap closes the popup for any wzrk:// link (note: wzrk, not wzkr).
+    closeUrl: "wzrk://close",
+    // After "Better luck next time" the popup closes by itself after this many seconds (0 = show a Close button instead).
+    autoCloseNoWinSeconds: 3,
+    // Backend address. Leave "" when this page is served by the same server (browser testing).
+    // For CleverTap custom HTML set the full public HTTPS URL, e.g. "https://stw.example.com".
+    apiBase: "https://stw-spin-wheel-1443.web.app",
+    // The customer's CleverTap Identity (their mobile number). Put the Identity value between the quotes.
+    // If left empty or still an unreplaced placeholder, the page falls back to ?identity= in the URL.
+    identity: "{{Profile.Identity | default: '#'}}",
+    // Wrap words in <span class='hl'>...</span> to give them the neon shimmer.
+    mainTitle: { text: "Spin the Wheel<br><span class='hl'>& Win Big!</span>", fontSize: "30px", color: "#ffffff" },
+    subtitle: { text: "Your chance to score discounts, free gifts, and exclusive perks is just a spin away.", fontSize: "14px", color: "#C9C3F0" },
+    copyInstruction: { color: "#7A6A99", copiedColor: "#16A34A" },
+    // Inside colour of the wheel's centre hub.
+    centerCircle: { color: "#0A0626", borderColor: "#2B2B2B33", borderWidth: 2, radius: 15 },
+    segmentColours: ["#FF2BD6", "#22E1FF", "#FFB800", "#8B5CF6"],
+    noWinColour: "#2A2466",
+    // When opened outside the app with no identity (CleverTap dashboard preview, desktop browser),
+    // let the wheel do a local demo spin. Nothing is sent to the server and no voucher is issued.
+    previewModeOutsideApp: true,
+    // Shown instantly while the live rewards load from the server (the wheel then updates itself).
+    // Keep this in line with the admin "Wheel segments" so the first view matches.
+    defaultSegments: [
+      { name: "Better luck next time", isNoWin: true },
+      { name: "Rs. 500 Voucher", isNoWin: false },
+      { name: "5GB Data", isNoWin: false },
+      { name: "Free Coffee", isNoWin: false },
+      { name: "Rs. 100 Reload", isNoWin: false },
+    ],
+    // The server can be slow on a cold start, so rewards are retried before giving up.
+    rewardsLoadAttempts: 3,
+    requestTimeoutSeconds: 12,
+  };
+  // -------------------- End of Configurable Settings --------------------
+  // Hide the popup until the server confirms this customer can play (no flash before a silent close).
+  // Safety net: it is shown anyway after 4 seconds.
+  (function () {
+    var id = String(CONFIG.identity || '').trim(), q = new URLSearchParams(location.search);
+    if ((id && !/[{}#]/.test(id)) || q.get('identity') || q.get('mobile')) {
+      document.documentElement.classList.add('stw-gate');
+      setTimeout(function () { document.documentElement.classList.remove('stw-gate'); }, 4000);
+    }
+  })();
+</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Spin the Wheel – Win Big!</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  html.stw-gate body { visibility: hidden; }
+  @property --ang { syntax: "<angle>"; inherits: true; initial-value: 0deg; }
+  :root {
+    --spin-duration: 5;
+    --font: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --display: "Fredoka", "Poppins", -apple-system, "Segoe UI", Roboto, sans-serif;
+    --cyan: #22E1FF; --pink: #FF2BD6; --amber: #FFB800; --violet: #8B5CF6;
+    --wheel: clamp(200px, min(262px, 44vh, 76vw), 262px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; width: 100%; margin: 0; display: flex; align-items: center; justify-content: center; perspective: 1200px;
+    background: transparent; font-family: var(--font); -webkit-tap-highlight-color: transparent; -webkit-font-smoothing: antialiased; }
+
+  /* ---------- card ---------- */
+  .modal { position: relative; isolation: isolate; overflow: hidden; display: flex; flex-direction: column; align-items: center;
+    justify-content: space-evenly; width: 100%; max-width: 336px; height: 100%; max-height: 610px; padding: 0 22px;
+    color: #fff; text-align: center; border-radius: 32px; border: 2px solid transparent; background: #1A0B4F;
+    box-shadow: 0 0 40px -6px rgba(255, 43, 214, .45), 0 30px 70px -20px rgba(0, 0, 0, .8);
+    animation: modalIn .8s cubic-bezier(.2, 1.25, .35, 1) both, borderSpin 6s linear infinite; }
+  .modal.leaving { animation: flipOut .45s cubic-bezier(.5, 0, .9, .5) forwards, borderSpin 6s linear infinite; }
+  .modal.reward { height: auto; max-height: none; justify-content: center; gap: 12px; padding: 44px 24px 34px;
+    animation: flipIn .75s cubic-bezier(.2, 1.2, .35, 1) both, borderSpin 6s linear infinite; }
+  .modal::before { content: ""; position: absolute; inset: -45%; z-index: -1; pointer-events: none;
+    background: radial-gradient(closest-side at 28% 32%, rgba(255, 43, 214, .32), transparent),
+                radial-gradient(closest-side at 74% 70%, rgba(34, 225, 255, .26), transparent),
+                radial-gradient(closest-side at 70% 20%, rgba(139, 92, 246, .3), transparent);
+    animation: aurora 20s linear infinite; }
+  .stars { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+  .grid { position: absolute; left: -30%; right: -30%; bottom: -10px; height: 34%; z-index: -1; pointer-events: none; opacity: .35;
+    background: linear-gradient(transparent 0 92%, rgba(34, 225, 255, .9) 92%) 0 0 / 100% 22px,
+                linear-gradient(90deg, transparent 0 96%, rgba(255, 43, 214, .9) 96%) 0 0 / 26px 100%;
+    transform: perspective(220px) rotateX(58deg); transform-origin: bottom;
+    -webkit-mask: linear-gradient(transparent, #000 70%); mask: linear-gradient(transparent, #000 70%);
+    animation: gridMove 1.6s linear infinite; }
+  .modal.reward .grid { display: none; }
+
+  @keyframes borderSpin { to { --ang: 360deg; } }
+  @keyframes modalIn { from { opacity: 0; transform: translateY(40px) scale(.85); } to { opacity: 1; transform: none; } }
+  @keyframes flipOut { to { opacity: .2; transform: rotateY(90deg) scale(.9); } }
+  @keyframes flipIn { from { opacity: .2; transform: rotateY(-90deg) scale(.9); } to { opacity: 1; transform: none; } }
+  @keyframes aurora { to { transform: rotate(360deg); } }
+  @keyframes gridMove { to { background-position: 0 22px, 0 0; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  .reveal { animation: rise .7s cubic-bezier(.2, .9, .3, 1.15) both; animation-delay: var(--d, 0s); }
+
+  /* corner buttons */
+  .close-btn, .sound-btn { position: absolute; top: 14px; z-index: 6; width: 34px; height: 34px; display: grid; place-items: center; padding: 0;
+    border-radius: 50%; background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .25); color: #fff; cursor: pointer;
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); text-decoration: none; transition: transform .2s, background .2s;
+    animation: rise .5s .6s both; }
+  .close-btn { right: 14px; }
+  .sound-btn { left: 14px; }
+  .close-btn:active, .sound-btn:active { transform: scale(.88); background: rgba(255, 255, 255, .25); }
+  .close-btn svg { width: 14px; height: 14px; }
+  .sound-btn svg { width: 17px; height: 17px; }
+  .sound-btn .x { display: none; }
+  .sound-btn.muted .waves { display: none; }
+  .sound-btn.muted .x { display: inline; }
+
+  /* ---------- heading ---------- */
+  .head { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 30px; }
+  .badge { display: inline-flex; padding: 6px 14px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 1.6px;
+    text-transform: uppercase; color: var(--amber); background: rgba(255, 184, 0, .1); border: 1px solid rgba(255, 184, 0, .55);
+    box-shadow: 0 0 14px rgba(255, 184, 0, .35), inset 0 0 10px rgba(255, 184, 0, .15); }
+  .badge:empty { display: none; }
+  h1 { margin: 0; font-family: var(--display); font-size: 30px; font-weight: 700; line-height: 1.08; letter-spacing: .2px;
+    text-shadow: 0 0 18px rgba(139, 92, 246, .8); }
+  .word { display: inline-block; white-space: nowrap; }
+  .ch { display: inline-block; animation: drop .7s cubic-bezier(.2, 1.5, .4, 1) both; animation-delay: calc(var(--base, 0s) + var(--i) * 30ms); }
+  .hl .ch { text-shadow: none; color: transparent; -webkit-background-clip: text; background-clip: text;
+    background-image: linear-gradient(90deg, #FFE27A, #FF2BD6, #22E1FF, #FFE27A); background-size: 400% 100%;
+    filter: drop-shadow(0 0 10px rgba(255, 43, 214, .55));
+    animation: drop .7s cubic-bezier(.2, 1.5, .4, 1) both, sheen 3.5s linear infinite;
+    animation-delay: calc(var(--base, 0s) + var(--i) * 30ms), calc(var(--i) * -.15s); }
+  @keyframes drop { from { opacity: 0; transform: translateY(-30px) rotateX(90deg) scale(.5); } to { opacity: 1; transform: none; } }
+  @keyframes sheen { to { background-position: 400% 0; } }
+  p { margin: 0; font-size: 14px; line-height: 1.5; color: #C9C3F0; font-weight: 500; max-width: 272px; }
+  p.error { color: #FFE08A; font-weight: 600; font-size: 13px; padding: 8px 12px; border-radius: 12px;
+    background: rgba(255, 184, 0, .12); border: 1px solid rgba(255, 184, 0, .5); animation: shake .45s; }
+  @keyframes shake { 20%, 60% { transform: translateX(-5px); } 40%, 80% { transform: translateX(5px); } }
+
+  /* ---------- wheel ---------- */
+  .wheel-zone { perspective: 900px; margin-top: 8px; }
+  .wheel-zone.quake { animation: quake .5s cubic-bezier(.36, .07, .19, .97); }
+  @keyframes quake { 10%, 90% { transform: translate(-1px, 1px); } 20%, 80% { transform: translate(3px, -2px); } 30%, 50%, 70% { transform: translate(-5px, 2px); } 40%, 60% { transform: translate(5px, -1px); } }
+  .wheel-float { animation: float 4s ease-in-out infinite; }
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  .wheel-container { position: relative; width: var(--wheel); height: var(--wheel); cursor: pointer;
+    transform: rotateX(calc(var(--tx, 0deg) + var(--lean, 0deg))) rotateY(var(--ty, 0deg)) scale(var(--sc, 1));
+    transition: transform .6s cubic-bezier(.2, .8, .2, 1); }
+  .wheel-container.spinning { --lean: 16deg; --sc: 1.04; }
+
+  .orbit { position: absolute; inset: -16px; border-radius: 50%; border: 1px dashed rgba(255, 255, 255, .22); pointer-events: none;
+    animation: aurora 14s linear infinite; }
+  .orbit i { position: absolute; width: 7px; height: 7px; margin: -3.5px; border-radius: 50%; background: #fff; }
+  .orbit i:nth-child(1) { top: 0; left: 50%; box-shadow: 0 0 10px 3px var(--cyan); }
+  .orbit i:nth-child(2) { top: 75%; left: 6.7%; box-shadow: 0 0 10px 3px var(--pink); }
+  .orbit i:nth-child(3) { top: 75%; left: 93.3%; box-shadow: 0 0 10px 3px var(--amber); }
+  .wheel-container.spinning .orbit { animation-duration: 1.4s; }
+
+  .wheel-glow { position: absolute; inset: -26px; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle, rgba(255, 43, 214, .5) 0%, rgba(34, 225, 255, .25) 45%, transparent 70%);
+    animation: glowPulse 2.8s ease-in-out infinite; }
+  .wheel-container.spinning .wheel-glow { animation-duration: .6s; }
+  @keyframes glowPulse { 0%, 100% { opacity: .6; transform: scale(.96); } 50% { opacity: 1; transform: scale(1.04); } }
+
+  .wheel-rim { position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from var(--ang), var(--cyan), var(--pink), var(--amber), var(--violet), var(--cyan));
+    box-shadow: 0 0 22px rgba(255, 43, 214, .6), 0 0 44px rgba(34, 225, 255, .3), 0 18px 34px -10px rgba(0, 0, 0, .8); }
+  .wheel-rim::before { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: #0A0626; }
+  .wheel-face { position: absolute; inset: 15px; border-radius: 50%; overflow: hidden; background: #0A0626; }
+  .wheel-face.idle { animation: nudge 4.5s ease-in-out 2s infinite; }
+  @keyframes nudge { 0%, 78%, 100% { transform: rotate(0); } 84% { transform: rotate(-8deg); } 91% { transform: rotate(4deg); } 96% { transform: rotate(-1.5deg); } }
+  canvas#wheelCanvas { display: block; width: 100%; height: 100%; border-radius: 50%; transform: rotate(0deg); will-change: transform, filter;
+    transition: transform calc(var(--spin-duration) * 1s) cubic-bezier(0.01, 0.05, 0.05, 1); }
+  .wheel-gloss { position: absolute; inset: 15px; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(110% 70% at 30% 8%, rgba(255, 255, 255, .26) 0%, rgba(255, 255, 255, 0) 45%);
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .15), inset 0 0 26px rgba(0, 0, 0, .55); }
+
+  .bulb { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: #fff;
+    transform: rotate(var(--a)) translateY(calc(var(--bulb-r, 124px) * -1));
+    animation: chase var(--dur, 1.8s) linear infinite; animation-delay: calc(var(--k) * var(--dur, 1.8s) * -1); }
+  .wheel-container.spinning .bulb { --dur: .5s; }
+  @keyframes chase { 0%, 100% { opacity: 1; box-shadow: 0 0 8px 3px var(--c); } 50% { opacity: .25; box-shadow: none; } }
+
+  .pointer { position: absolute; top: -20px; left: 50%; width: 36px; height: 46px; margin-left: -18px; z-index: 4; pointer-events: none;
+    transform-origin: 50% 32%; filter: drop-shadow(0 0 8px rgba(255, 43, 214, .9)) drop-shadow(0 4px 4px rgba(0, 0, 0, .5)); }
+  .pointer svg { width: 100%; height: 100%; display: block; }
+  .pointer.tick { animation: tick .16s ease-out; }
+  .wheel-container.landed .pointer { animation: bounce .7s cubic-bezier(.3, 1.6, .5, 1); }
+  @keyframes tick { 0% { transform: rotate(0); } 35% { transform: rotate(-26deg); } 100% { transform: rotate(0); } }
+  @keyframes bounce { 0% { transform: none; } 30% { transform: translateY(-10px) scale(1.15); } 100% { transform: none; } }
+
+  .hub { position: absolute; left: 50%; top: 50%; width: 24%; height: 24%; z-index: 3; border-radius: 50%; display: grid; place-items: center;
+    transform: translate(-50%, -50%); background: conic-gradient(from var(--ang), var(--cyan), var(--pink), var(--amber), var(--cyan));
+    box-shadow: 0 0 18px rgba(255, 43, 214, .7), 0 6px 14px rgba(0, 0, 0, .6); }
+  .hub::before { content: ""; position: absolute; inset: 4px; border-radius: 50%; background-color: var(--hub, #0A0626);
+    background-image: radial-gradient(circle at 35% 28%, rgba(255, 255, 255, .22), transparent 60%); }
+  .hub span { position: relative; font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 1px; color: #fff;
+    text-shadow: 0 0 8px var(--cyan), 0 0 16px var(--pink); }
+  .wheel-container:not(.spinning):not(.landed) .hub { animation: hubPulse 1.6s ease-in-out infinite; }
+  @keyframes hubPulse { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.1); } }
+
+  .shock { position: absolute; inset: 0; border-radius: 50%; border: 3px solid #fff; opacity: 0; pointer-events: none; box-shadow: 0 0 20px var(--pink), inset 0 0 20px var(--cyan); }
+  .wheel-container.landed .shock { animation: shock .9s cubic-bezier(.1, .7, .3, 1); }
+  .wheel-container.landed .shock.s2 { animation-delay: .15s; }
+  @keyframes shock { 0% { opacity: .9; transform: scale(.9); } 100% { opacity: 0; transform: scale(1.7); } }
+
+  /* ---------- buttons ---------- */
+  .btn-wrap { display: flex; justify-content: center; }
+  .action-btn { position: relative; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; min-width: 220px;
+    padding: 16px 40px; border: 0; border-radius: 999px; font: 700 18px/1 var(--display); letter-spacing: 1.2px; text-transform: uppercase;
+    text-decoration: none; cursor: pointer; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, .35);
+    background: linear-gradient(90deg, #FF2BD6, #8B5CF6, #22E1FF); background-size: 200% 100% !important;
+    animation: flow 3s linear infinite, breathe 2.2s ease-in-out infinite; transition: transform .12s, filter .25s, opacity .25s; }
+  .action-btn::before { content: ""; position: absolute; top: 0; bottom: 0; left: -60%; width: 40%; transform: skewX(-20deg);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .6), transparent); animation: shine 2.8s ease-in-out 1.5s infinite; }
+  .action-btn::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 2px 0 rgba(255, 255, 255, .45), inset 0 -3px 0 rgba(0, 0, 0, .2); pointer-events: none; }
+  .action-btn:active:not(:disabled) { transform: scale(.95); }
+  .action-btn:disabled { cursor: default; filter: saturate(.6) brightness(.85); }
+  .action-btn:disabled::before { animation: none; }
+  @keyframes flow { to { background-position: 200% 0; } }
+  @keyframes breathe { 0%, 100% { box-shadow: 0 0 16px rgba(255, 43, 214, .55), 0 0 34px rgba(34, 225, 255, .25); } 50% { box-shadow: 0 0 26px rgba(255, 43, 214, .85), 0 0 50px rgba(34, 225, 255, .5); } }
+  @keyframes shine { 0% { left: -60%; } 45%, 100% { left: 140%; } }
+  .ripple { position: absolute; width: 20px; height: 20px; margin: -10px; border-radius: 50%; background: rgba(255, 255, 255, .55); pointer-events: none; animation: ripple .6s ease-out forwards; }
+  @keyframes ripple { to { transform: scale(18); opacity: 0; } }
+
+  /* ---------- result ---------- */
+  .reward-hero { position: relative; width: 132px; height: 132px; display: grid; place-items: center; }
+  .rays { position: absolute; inset: -40px; border-radius: 50%;
+    background: repeating-conic-gradient(from 0deg, rgba(255, 226, 122, .5) 0deg 8deg, transparent 8deg 22deg);
+    -webkit-mask: radial-gradient(circle, #000 15%, transparent 66%); mask: radial-gradient(circle, #000 15%, transparent 66%);
+    animation: aurora 16s linear infinite; }
+  .ring { position: absolute; border-radius: 50%; }
+  .ring.r1 { inset: 4px; border: 2px dashed rgba(34, 225, 255, .7); animation: aurora 12s linear infinite; }
+  .ring.r2 { inset: 16px; border: 3px solid transparent; border-top-color: var(--pink); border-bottom-color: var(--amber);
+    filter: drop-shadow(0 0 6px var(--pink)); animation: aurora 2.4s linear infinite reverse; }
+  .ring.core { inset: 26px; background: radial-gradient(circle, rgba(255, 255, 255, .35), rgba(139, 92, 246, .25) 55%, transparent 72%); }
+  .orbiter { position: absolute; inset: 0; animation: aurora 3.5s linear infinite; }
+  .orbiter i { position: absolute; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: #fff; }
+  .orbiter i:nth-child(1) { top: 0; left: 50%; box-shadow: 0 0 10px 3px var(--cyan); }
+  .orbiter i:nth-child(2) { top: 50%; left: 100%; box-shadow: 0 0 10px 3px var(--amber); }
+  .orbiter i:nth-child(3) { top: 100%; left: 50%; box-shadow: 0 0 10px 3px var(--pink); }
+  .hero-icon { position: relative; font-size: 60px; line-height: 1; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, .5));
+    animation: pop .9s cubic-bezier(.2, 1.7, .4, 1) .25s both, float 3s ease-in-out 1.2s infinite; }
+  .reward-hero.lose .rays, .reward-hero.lose .orbiter { opacity: .25; filter: grayscale(1); }
+  .reward-hero.lose .ring.r2 { animation-duration: 8s; opacity: .5; }
+  .reward-hero.lose .hero-icon { animation: pop .9s cubic-bezier(.2, 1.7, .4, 1) .25s both, sway 3s ease-in-out 1.2s infinite; }
+  @keyframes pop { from { transform: scale(0) rotate(-30deg); } to { transform: none; } }
+  @keyframes sway { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+
+  .reward-title { margin: 4px 0 0; font-size: 30px; }
+  .prize-chip { display: inline-block; padding: 8px 18px; border-radius: 14px; font: 700 20px/1.2 var(--display); color: #fff;
+    background: linear-gradient(90deg, rgba(255, 43, 214, .25), rgba(34, 225, 255, .25)); border: 1px solid rgba(255, 255, 255, .35);
+    box-shadow: 0 0 22px rgba(255, 43, 214, .45), inset 0 0 14px rgba(34, 225, 255, .25); text-shadow: 0 0 10px rgba(255, 255, 255, .6); }
+  .prize-chip:empty { display: none; }
+  .reward-subtext { font-size: 13.5px; font-weight: 500; line-height: 1.5; color: #C9C3F0; max-width: 270px; }
+
+  .reward-wrapper { display: none; position: relative; width: 100%; margin-top: 4px; filter: drop-shadow(0 0 18px rgba(34, 225, 255, .35)) drop-shadow(0 12px 18px rgba(0, 0, 0, .5)); }
+  .reward-wrapper.visible { display: block; animation: ticketIn .9s cubic-bezier(.2, 1.3, .4, 1) .55s both; }
+  @keyframes ticketIn { from { opacity: 0; transform: perspective(500px) translateY(40px) rotateX(70deg); } to { opacity: 1; transform: none; } }
+  .reward-box { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    width: 100%; padding: 16px 22px 14px; border-radius: 16px; cursor: pointer; color: #2A1052;
+    background: linear-gradient(135deg, #FFFFFF 0%, #F5EDFF 55%, #E3FAFF 100%);
+    -webkit-mask: radial-gradient(circle 11px at 0 58%, transparent 98%, #000) left / 51% 100% no-repeat,
+                  radial-gradient(circle 11px at 100% 58%, transparent 98%, #000) right / 51% 100% no-repeat;
+            mask: radial-gradient(circle 11px at 0 58%, transparent 98%, #000) left / 51% 100% no-repeat,
+                  radial-gradient(circle 11px at 100% 58%, transparent 98%, #000) right / 51% 100% no-repeat; }
+  .reward-box::before { content: ""; position: absolute; inset: 7px; border: 1.5px dashed rgba(139, 92, 246, .45); border-radius: 11px; pointer-events: none; }
+  .holo { position: absolute; inset: 0; pointer-events: none; opacity: .55; background-size: 300% 100%;
+    background-image: linear-gradient(115deg, transparent 25%, rgba(255, 43, 214, .28) 38%, rgba(34, 225, 255, .3) 48%, rgba(255, 226, 122, .35) 58%, transparent 72%);
+    animation: holo 3.5s linear infinite; }
+  @keyframes holo { from { background-position: 100% 0; } to { background-position: -200% 0; } }
+  .ticket-label { position: relative; font-size: 10px; font-weight: 700; letter-spacing: 2.2px; text-transform: uppercase; color: #8B5CF6; }
+  .reward-main { position: relative; display: flex; align-items: center; justify-content: center; gap: 10px; max-width: 100%; }
+  #rewardText { font: 800 22px/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 2px; color: #4C1D95; word-break: break-all; }
+  #rewardText.scrambling { color: #A78BFA; }
+  .copy-btn { flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 10px; cursor: pointer;
+    background: #EDE4FF; transition: transform .15s, background .2s; }
+  .copy-btn:active { transform: scale(.85); }
+  .copy-btn svg { width: 18px; height: 18px; }
+  .copy-btn .ic-check { display: none; }
+  .reward-box.copied .copy-btn { background: #DCFCE7; }
+  .reward-box.copied .ic-copy { display: none; }
+  .reward-box.copied .ic-check { display: block; animation: pop .45s cubic-bezier(.2, 1.7, .4, 1); }
+  .copy-instruction { position: relative; font-size: 12px; font-weight: 600; color: #7A6A99; transition: color .2s; }
+  .glint { position: absolute; top: 0; bottom: 0; left: -60%; width: 32%; transform: skewX(-20deg); pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .95), transparent); animation: shine 3s ease-in-out 2s infinite; }
+  .toast { position: absolute; left: 50%; top: -6px; z-index: 2; padding: 6px 14px; border-radius: 999px; background: #16A34A; color: #fff;
+    font-size: 12px; font-weight: 700; opacity: 0; pointer-events: none; transform: translate(-50%, 0); box-shadow: 0 0 16px rgba(74, 222, 128, .7); }
+  .toast.show { animation: toast 1.5s ease forwards; }
+  @keyframes toast { 0% { opacity: 0; transform: translate(-50%, 10px) scale(.8); } 15%, 75% { opacity: 1; transform: translate(-50%, -18px) scale(1); } 100% { opacity: 0; transform: translate(-50%, -30px); } }
+  @keyframes pulsate { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+  .pulsate-animation { animation: pulsate 1.4s ease-in-out 2.2s 3; }
+
+  .countdown { display: none; position: absolute; left: 28px; right: 28px; bottom: 16px; height: 4px; border-radius: 4px; background: rgba(255, 255, 255, .14); overflow: hidden; }
+  .countdown.run { display: block; }
+  .countdown span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cyan), var(--pink));
+    box-shadow: 0 0 10px var(--pink); transform-origin: left; animation: drain var(--dur, 3s) linear forwards; }
+  @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .modal::before, .grid, .orbit, .bulb, .rays, .ring, .orbiter, .glint, .holo, .action-btn, .action-btn::before, .wheel-glow, .hub,
+    .hero-icon, .wheel-float, .wheel-face.idle, .hl .ch { animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="modal" id="spinModal">
+    <canvas class="stars"></canvas>
+    <div class="grid"></div>
+    <button class="sound-btn" type="button" aria-label="Toggle sound">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z" fill="currentColor"/><path class="waves" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path class="x" d="M16 9l5 6M21 9l-5 6"/></svg>
+    </button>
+    <a class="close-btn" href="wzrk://close" aria-label="Close">
+      <svg viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </a>
+    <div class="head">
+      <span class="badge reveal" id="badge" style="--d:.2s"></span>
+      <h1 class="title" id="mainTitle"></h1>
+    </div>
+    <p id="subtitle" class="reveal" style="--d:.7s"></p>
+    <div class="wheel-zone reveal" id="wheelZone" style="--d:.5s">
+      <div class="wheel-float">
+        <div class="wheel-container">
+          <div class="wheel-glow"></div>
+          <div class="orbit"><i></i><i></i><i></i></div>
+          <div class="wheel-rim" id="wheelRim">
+            <div class="wheel-face idle" id="wheelFace">
+              <canvas id="wheelCanvas" role="button" tabindex="0" aria-label="Spin the Wheel"></canvas>
+            </div>
+            <div class="wheel-gloss"></div>
+          </div>
+          <div class="shock"></div><div class="shock s2"></div>
+          <div class="pointer" id="pointer">
+            <svg viewBox="0 0 34 44">
+              <defs>
+                <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF7BE5"/><stop offset=".55" stop-color="#FF2BD6"/><stop offset="1" stop-color="#9D0FA0"/></linearGradient>
+                <radialGradient id="gem" cx=".35" cy=".35" r=".7"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".5" stop-color="#9BF3FF"/><stop offset="1" stop-color="#14A8C9"/></radialGradient>
+              </defs>
+              <path d="M17 43 L5 21 A13 13 0 1 1 29 21 Z" fill="url(#pg)" stroke="#fff" stroke-opacity=".7" stroke-width="1.2"/>
+              <circle cx="17" cy="16" r="6" fill="url(#gem)" stroke="#fff" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="hub" id="hub"><span>SPIN</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="btn-wrap reveal" style="--d:.85s"><button class="action-btn" id="actionButton">Spin Now</button></div>
+  </div>
+
+  <div class="modal reward" id="rewardModal" style="display:none;">
+    <canvas class="stars"></canvas>
+    <button class="sound-btn" type="button" aria-label="Toggle sound">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z" fill="currentColor"/><path class="waves" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path class="x" d="M16 9l5 6M21 9l-5 6"/></svg>
+    </button>
+    <a class="close-btn" href="wzrk://close" aria-label="Close">
+      <svg viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </a>
+    <div class="reward-hero" id="rewardHero">
+      <div class="rays"></div><div class="ring core"></div><div class="ring r1"></div><div class="ring r2"></div>
+      <div class="orbiter"><i></i><i></i><i></i></div>
+      <div class="hero-icon" id="heroIcon">🎁</div>
+    </div>
+    <h1 class="reward-title" id="rewardTitle"></h1>
+    <div class="prize-chip reveal" id="prizeChip" style="--d:.7s"></div>
+    <div id="rewardSubtext" class="reward-subtext reveal" style="--d:.8s"></div>
+    <div class="reward-wrapper" id="rewardWrapper">
+      <span class="toast" id="toast">Copied!</span>
+      <div class="reward-box" id="rewardBox">
+        <span class="holo"></span>
+        <span class="ticket-label">Your voucher code</span>
+        <div class="reward-main">
+          <span id="rewardText"></span>
+          <button id="copyBtn" class="copy-btn" title="Copy to clipboard" aria-label="Copy code">
+            <svg class="ic-copy" viewBox="0 0 20 21" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M13 13.8444V17.8444C13 18.4444 12.6 18.8444 12 18.8444H3C2.4 18.8444 2 18.4444 2 17.8444V8.84442C2 8.24442 2.4 7.84442 3 7.84442H7V3.84442C7 3.24442 7.4 2.84442 8 2.84442H17C17.6 2.84442 18 3.24442 18 3.84442V12.8444C18 13.4444 17.6 13.8444 17 13.8444H13ZM12 13.8444H8C7.4 13.8444 7 13.4444 7 12.8444V8.84442H3V17.8444H12V13.8444ZM17 3.84442H8V12.8444H17V3.84442Z" fill="#6D28D9"/></svg>
+            <svg class="ic-check" viewBox="0 0 20 20" fill="none"><path d="M4 10.5l4 4 8-9" stroke="#16A34A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div class="copy-instruction" id="copyInstruction">Tap to copy the code</div>
+        <span class="glint"></span>
+      </div>
+    </div>
+    <div class="btn-wrap reveal" style="--d:1s"><a class="action-btn" id="claimButton" href="wzrk://close">Collect Now</a></div>
+    <div class="countdown" id="countdown"><span></span></div>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const spinModal = $('spinModal'), rewardModal = $('rewardModal'), subtitleEl = $('subtitle');
+  const wheelCanvas = $('wheelCanvas'), wheelContainer = document.querySelector('.wheel-container');
+  const wheelRim = $('wheelRim'), wheelFace = $('wheelFace'), wheelZone = $('wheelZone'), pointerEl = $('pointer');
+  const ctx = wheelCanvas.getContext('2d');
+  const spinButton = $('actionButton'), claimButton = $('claimButton');
+  const rewardWrapper = $('rewardWrapper'), rewardBox = $('rewardBox');
+  const copyInstructionEl = $('copyInstruction');
+  const TAU = Math.PI * 2;
+  const rnd = (a, b) => Math.random() * (b - a) + a;
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const NEON = ['#22E1FF', '#FF2BD6', '#FFB800', '#8B5CF6', '#B6FF3B', '#FFFFFF'];
+  let segments = [], liveRewards = false, isSpinning = false, hasSpun = false, currentRotation = 0;
+  let closeOnly = false; // this customer can't play now (already won / out of spins): the button just closes
+  let highlightIndex = -1; // winning segment, the others are dimmed after landing
+
+  // ---- CleverTap bridge (Android: window.CleverTap, iOS: webkit message handler) ----
+  const ctAndroid = window.CleverTap;
+  const ctIOS = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.clevertap;
+  const inApp = !!(ctAndroid || ctIOS);
+
+  function trackEvent(name, props) {
+    try {
+      if (ctAndroid && ctAndroid.pushEvent) {
+        if (props) ctAndroid.pushEvent(name, JSON.stringify(props)); else ctAndroid.pushEvent(name);
+      } else if (ctIOS) {
+        ctIOS.postMessage({ action: 'recordEventWithProps', event: name, properties: props || {} });
+      }
+    } catch (e) { /* analytics must never break the game */ }
+  }
+  function pushProfile(props) {
+    try {
+      if (ctAndroid && ctAndroid.pushProfile) ctAndroid.pushProfile(JSON.stringify(props));
+      else if (ctIOS) ctIOS.postMessage({ action: 'profilePush', properties: props });
+    } catch (e) { /* never break the game */ }
+  }
+  // Real wins only: the event triggers the CleverTap push campaign that re-sends the code,
+  // and the profile keeps the last code so it is never lost.
+  function recordWin(data) {
+    if (data.preview || !data.won || !data.voucherCode) return;
+    const props = { voucher_code: String(data.voucherCode), reward: String(data.reward || ''), voucher_value: String(data.voucherValue || '') };
+    trackEvent('Spin Wheel Won', props);
+    pushProfile({ 'STW Last Voucher Code': props.voucher_code, 'STW Last Reward': props.reward, 'STW Last Voucher Value': props.voucher_value });
+  }
+  // Closing is done by the tapped link itself (href = closeUrl): iOS CleverTap only acts on
+  // links the user actually taps, not on location.href set from script. This runs on that tap.
+  // Close from script (iOS CleverTap only acts on a clicked link, so one is clicked).
+  function closePopup() {
+    onCloseTap();
+    const a = document.createElement('a');
+    a.href = CONFIG.closeUrl;
+    document.body.appendChild(a);
+    a.click();
+  }
+  function onCloseTap() {
+    trackEvent('Spin Wheel Closed', { spun: hasSpun });
+    try {
+      if (ctAndroid && ctAndroid.dismissInAppNotification) ctAndroid.dismissInAppNotification();
+    } catch (e) { /* the link still closes it */ }
+  }
+
+  // Identity (mobile number) comes from CleverTap / the MyDialog app link (?identity=...)
+  const cfgIdentity = String(CONFIG.identity || '').trim();
+  const params = new URLSearchParams(location.search);
+  const identity = (cfgIdentity && !/[{}#]/.test(cfgIdentity) ? cfgIdentity : params.get('identity') || params.get('mobile') || '').trim();
+  const previewMode = !identity && !inApp && CONFIG.previewModeOutsideApp;
+
+  // ---- sound (Web Audio, no files) + haptics ----
+  let actx = null, soundOn = !!CONFIG.sound;
+  function audio() {
+    if (!soundOn) return null;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      return actx;
+    } catch (e) { return null; }
+  }
+  function tone(freq, dur, type, vol, when, slideTo) {
+    const a = audio(); if (!a) return;
+    const t = a.currentTime + (when || 0), o = a.createOscillator(), g = a.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function noise(dur, vol, when) {
+    const a = audio(); if (!a) return;
+    const t = a.currentTime + (when || 0), buf = a.createBuffer(1, a.sampleRate * dur, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+    const s = a.createBufferSource(), g = a.createGain(), f = a.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 900;
+    s.buffer = buf; g.gain.value = vol; s.connect(f); f.connect(g); g.connect(a.destination); s.start(t);
+  }
+  const sfx = {
+    start: () => { tone(220, .45, 'sawtooth', .05, 0, 880); tone(440, .3, 'triangle', .04, .05, 1320); },
+    tick: () => tone(rnd(1500, 1800), .035, 'square', .025),
+    land: () => { tone(140, .35, 'sine', .14, 0, 50); noise(.25, .25); },
+    win: () => [523, 659, 784, 1047, 1319].forEach((f, i) => { tone(f, .28, 'triangle', .07, i * .09); tone(f * 2, .2, 'sine', .02, i * .09 + .03); }),
+    lose: () => { tone(392, .3, 'sine', .06); tone(311, .5, 'sine', .06, .22); },
+    boom: () => { noise(.5, .35); tone(90, .4, 'sine', .08, 0, 40); },
+    lock: () => tone(rnd(900, 1200), .03, 'square', .015),
+    copy: () => { tone(880, .08, 'sine', .07); tone(1320, .14, 'sine', .07, .07); },
+  };
+  function buzz(pattern) {
+    if (!CONFIG.haptics || !navigator.vibrate) return;
+    try { navigator.vibrate(pattern); } catch (e) { /* not supported */ }
+  }
+  document.querySelectorAll('.sound-btn').forEach((b) => {
+    if (!CONFIG.sound) { b.style.display = 'none'; return; }
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      soundOn = !soundOn;
+      document.querySelectorAll('.sound-btn').forEach((x) => x.classList.toggle('muted', !soundOn));
+      if (soundOn) tone(880, .08, 'sine', .05);
+    });
+  });
+
+  // ---- full-screen effects layer: sparks, fireworks, confetti ----
+  const fx = (function () {
+    const c = document.createElement('canvas');
+    Object.assign(c.style, { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 9999 });
+    document.body.appendChild(c);
+    const g = c.getContext('2d');
+    let W = 0, H = 0, ps = [], raf = 0;
+    function size() {
+      const d = Math.min(2, window.devicePixelRatio || 1);
+      W = innerWidth; H = innerHeight; c.width = W * d; c.height = H * d; g.setTransform(d, 0, 0, d, 0, 0);
+    }
+    size(); addEventListener('resize', size);
+    function add(p) {
+      ps.push(Object.assign({ kind: 'spark', vx: 0, vy: 0, grav: 0, drag: 1, life: 0, ttl: 60, size: 2, col: '#fff', fade: 30 }, p));
+      if (!raf) raf = requestAnimationFrame(step);
+    }
+    function explode(p) {
+      add({ kind: 'flash', x: p.x, y: p.y, size: 34, ttl: 14, fade: 14, col: 'rgba(255,255,255,.9)' });
+      const n = 60;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * TAU + rnd(-.05, .05), v = rnd(2, 5.4);
+        add({ x: p.x, y: p.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, grav: .05, drag: .975, ttl: rnd(55, 90), size: rnd(1.4, 2.6), col: p.cols[i % p.cols.length], trail: 3, fade: 35 });
+      }
+      sfx.boom(); buzz(20);
+    }
+    function step() {
+      g.clearRect(0, 0, W, H);
+      const keep = [];
+      for (let k = 0; k < ps.length; k++) {
+        const p = ps[k];
+        p.life++; p.vx *= p.drag; p.vy = p.vy * p.drag + p.grav;
+        if (p.tilt !== undefined) { p.tilt += p.vt; p.rot += p.vr; p.x += Math.sin(p.tilt) * (p.sway || 0); }
+        p.x += p.vx; p.y += p.vy;
+        if (p.kind === 'rocket' && (p.vy > -1.2 || p.life > p.ttl)) { explode(p); continue; }
+        if (p.life >= p.ttl || p.y > H + 40) continue;
+        g.globalAlpha = Math.max(0, Math.min(1, (p.ttl - p.life) / p.fade));
+        if (p.kind === 'spark' || p.kind === 'rocket') {
+          g.globalCompositeOperation = 'lighter';
+          g.strokeStyle = p.col; g.lineWidth = p.size; g.lineCap = 'round';
+          g.beginPath(); g.moveTo(p.x, p.y); g.lineTo(p.x - p.vx * (p.trail || 2), p.y - p.vy * (p.trail || 2)); g.stroke();
+        } else if (p.kind === 'flash') {
+          g.globalCompositeOperation = 'lighter';
+          const r = p.size * (1 + p.life / p.ttl), gr = g.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+          gr.addColorStop(0, p.col); gr.addColorStop(1, 'rgba(0,0,0,0)');
+          g.fillStyle = gr; g.beginPath(); g.arc(p.x, p.y, r, 0, TAU); g.fill();
+        } else {
+          g.globalCompositeOperation = 'source-over';
+          g.fillStyle = p.col; g.save(); g.translate(p.x, p.y); g.rotate(p.rot); g.scale(1, Math.cos(p.tilt));
+          if (p.kind === 'circle') { g.beginPath(); g.arc(0, 0, p.w / 2, 0, TAU); g.fill(); } else g.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+          g.restore();
+        }
+        keep.push(p);
+      }
+      g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+      ps = keep;
+      raf = ps.length ? requestAnimationFrame(step) : 0;
+    }
+    return {
+      sparks(x, y, n, cols, power) {
+        for (let i = 0; i < n; i++) {
+          const a = rnd(0, TAU), v = rnd(power * .4, power);
+          add({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1, grav: .12, drag: .95, ttl: rnd(18, 34), size: rnd(1.2, 2.2), col: pick(cols), fade: 14 });
+        }
+      },
+      fireworks(count) {
+        for (let i = 0; i < count; i++) {
+          setTimeout(() => {
+            const a = pick(NEON), b = pick(NEON);
+            add({ kind: 'rocket', x: rnd(W * .2, W * .8), y: H + 10, vx: rnd(-1, 1), vy: -rnd(H / 70, H / 58), grav: .17, ttl: 140, size: 2.4, col: '#FFE9A8', trail: 4, cols: [a, b, '#fff'] });
+          }, i * 420);
+        }
+      },
+      confetti() {
+        const cannon = (x, ang) => {
+          for (let i = 0; i < 60; i++) {
+            const a = ang + rnd(-.4, .4), v = rnd(10, 22);
+            add({ kind: pick(['rect', 'rect', 'circle']), x: x, y: H * .9, vx: Math.cos(a) * v, vy: Math.sin(a) * v, grav: .32, drag: .985,
+              w: rnd(6, 10), h: rnd(8, 14), rot: rnd(0, TAU), vr: rnd(-.25, .25), tilt: rnd(0, TAU), vt: rnd(.06, .16), sway: .8, ttl: rnd(150, 220), fade: 40, col: pick(NEON) });
+          }
+        };
+        cannon(0, -Math.PI / 3); cannon(W, -2 * Math.PI / 3);
+        for (let i = 0; i < 70; i++) {
+          add({ kind: pick(['rect', 'circle', 'rect']), x: rnd(0, W), y: rnd(-H * .6, -10), vx: rnd(-1, 1), vy: rnd(2, 4), grav: .03, drag: .995,
+            w: rnd(6, 10), h: rnd(8, 14), rot: rnd(0, TAU), vr: rnd(-.2, .2), tilt: rnd(0, TAU), vt: rnd(.05, .12), sway: 1.2, ttl: 420, fade: 40, col: pick(NEON) });
+        }
+      },
+    };
+  })();
+
+  // ---- starfield with shooting stars (one per card) ----
+  function starfield(canvas) {
+    const g = canvas.getContext('2d');
+    let W = 0, H = 0, stars = [], shoot = null, nextShoot = 1500, raf = 0;
+    function size() {
+      const d = Math.min(2, window.devicePixelRatio || 1);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * d; canvas.height = H * d; g.setTransform(d, 0, 0, d, 0, 0);
+      stars = Array.from({ length: Math.round((W * H) / 2400) }, () => ({ x: rnd(0, W), y: rnd(0, H), r: rnd(.3, 1.5), tw: rnd(0, TAU), sp: rnd(.01, .04), vy: rnd(.03, .18) }));
+    }
+    function frame(t) {
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = '#fff';
+      stars.forEach((s) => {
+        s.tw += s.sp; s.y -= s.vy;
+        if (s.y < -2) { s.y = H + 2; s.x = rnd(0, W); }
+        g.globalAlpha = .25 + .75 * Math.abs(Math.sin(s.tw));
+        g.beginPath(); g.arc(s.x, s.y, s.r, 0, TAU); g.fill();
+      });
+      if (!shoot && t > nextShoot) shoot = { x: rnd(W * .3, W * 1.1), y: rnd(-10, H * .35), vx: -rnd(6, 9), vy: rnd(2.5, 4), life: 0 };
+      if (shoot) {
+        shoot.life++; shoot.x += shoot.vx; shoot.y += shoot.vy;
+        const tx = shoot.x - shoot.vx * 9, ty = shoot.y - shoot.vy * 9, tail = g.createLinearGradient(shoot.x, shoot.y, tx, ty);
+        tail.addColorStop(0, 'rgba(255,255,255,.95)'); tail.addColorStop(1, 'rgba(34,225,255,0)');
+        g.globalAlpha = 1; g.strokeStyle = tail; g.lineWidth = 1.8; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(shoot.x, shoot.y); g.lineTo(tx, ty); g.stroke();
+        if (shoot.life > 45) { shoot = null; nextShoot = t + rnd(2200, 5000); }
+      }
+      g.globalAlpha = 1;
+      raf = requestAnimationFrame(frame);
+    }
+    return {
+      start() { size(); cancelAnimationFrame(raf); raf = requestAnimationFrame(frame); },
+      stop() { cancelAnimationFrame(raf); },
+    };
+  }
+  const spinStars = starfield(spinModal.querySelector('.stars'));
+  const rewardStars = starfield(rewardModal.querySelector('.stars'));
+
+  // ---- letter-by-letter title ----
+  function splitLetters(el, baseDelay) {
+    let idx = 0;
+    (function walk(node) {
+      Array.from(node.childNodes).forEach((n) => {
+        if (n.nodeType === 3) {
+          const frag = document.createDocumentFragment();
+          n.textContent.split(/(\s+)/).forEach((part) => {
+            if (!part) return;
+            if (/^\s+$/.test(part)) { frag.appendChild(document.createTextNode(' ')); return; }
+            const w = document.createElement('span'); w.className = 'word';
+            Array.from(part).forEach((ch) => {
+              const s = document.createElement('span'); s.className = 'ch'; s.textContent = ch;
+              s.style.setProperty('--i', idx++); w.appendChild(s);
+            });
+            frag.appendChild(w);
+          });
+          n.replaceWith(frag);
+        } else if (n.nodeType === 1 && n.tagName !== 'BR') walk(n);
+      });
+    })(el);
+    el.style.setProperty('--base', baseDelay);
+  }
+
+  // ---- apply config ----
+  function cardBackground(bg) {
+    const inner = /gradient\(/.test(bg) ? bg : 'linear-gradient(' + bg + ',' + bg + ')';
+    const n = CONFIG.neonBorder || [];
+    const ring = n.length ? 'conic-gradient(from var(--ang), ' + n.concat(n[0]).join(', ') + ')' : 'linear-gradient(#fff3,#fff3)';
+    return inner + ' padding-box, ' + ring + ' border-box';
+  }
+  spinModal.style.background = cardBackground(CONFIG.background);
+  rewardModal.style.background = cardBackground(CONFIG.background);
+  document.documentElement.style.setProperty('--spin-duration', CONFIG.spinDurationSeconds);
+  $('badge').textContent = CONFIG.badgeText || '';
+  $('mainTitle').innerHTML = CONFIG.mainTitle.text;
+  $('mainTitle').style.fontSize = CONFIG.mainTitle.fontSize;
+  $('mainTitle').style.color = CONFIG.mainTitle.color;
+  splitLetters($('mainTitle'), '.3s');
+  subtitleEl.style.fontSize = CONFIG.subtitle.fontSize;
+  subtitleEl.style.color = CONFIG.subtitle.color;
+  copyInstructionEl.style.color = CONFIG.copyInstruction.color;
+  $('hub').style.setProperty('--hub', CONFIG.centerCircle.color);
+  spinButton.textContent = CONFIG.spinButton.text;
+  spinButton.style.background = CONFIG.spinButton.background;
+  spinButton.style.color = CONFIG.spinButton.color;
+  document.querySelectorAll('.close-btn').forEach((b) => {
+    b.href = CONFIG.closeUrl;
+    if (!CONFIG.includeDismissButton) b.style.display = 'none';
+    else b.addEventListener('click', onCloseTap);
+  });
+
+  // ---- rim lights ----
+  const BULBS = 20, BULB_COLS = ['#22E1FF', '#FF2BD6', '#FFB800'];
+  for (let i = 0; i < BULBS; i++) {
+    const b = document.createElement('i');
+    b.className = 'bulb';
+    b.style.setProperty('--a', (i * 360 / BULBS) + 'deg');
+    b.style.setProperty('--k', i / BULBS);
+    b.style.setProperty('--c', BULB_COLS[i % BULB_COLS.length]);
+    wheelRim.appendChild(b);
+  }
+
+  // ---- button ripple ----
+  document.querySelectorAll('.action-btn').forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => {
+      if (btn.disabled) return;
+      const r = btn.getBoundingClientRect(), s = document.createElement('span');
+      s.className = 'ripple'; s.style.left = (e.clientX - r.left) + 'px'; s.style.top = (e.clientY - r.top) + 'px';
+      btn.appendChild(s); setTimeout(() => s.remove(), 650);
+    });
+  });
+
+  // ---- 3D tilt (finger / mouse, and phone motion where available) ----
+  function setTilt(x, y) {
+    wheelContainer.style.setProperty('--tx', x.toFixed(1) + 'deg');
+    wheelContainer.style.setProperty('--ty', y.toFixed(1) + 'deg');
+  }
+  if (CONFIG.tilt) {
+    const clamp = (v) => Math.max(-10, Math.min(10, v));
+    spinModal.addEventListener('pointermove', (e) => {
+      if (isSpinning || hasSpun) return;
+      const r = wheelZone.getBoundingClientRect();
+      setTilt(clamp(-((e.clientY - r.top) / r.height - .5) * 22), clamp(((e.clientX - r.left) / r.width - .5) * 22));
+    });
+    spinModal.addEventListener('pointerleave', () => setTilt(0, 0));
+    addEventListener('deviceorientation', (e) => {
+      if (isSpinning || hasSpun || e.beta == null) return;
+      setTilt(clamp(-(e.beta - 50) / 3), clamp(e.gamma / 3));
+    });
+  }
+
+  function showMessage(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.remove('error'); void subtitleEl.offsetWidth; // replay the shake
+    subtitleEl.classList.add('error');
+  }
+  function showSubtitle(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.remove('error');
+  }
+  function updateSpinButton() {
+    if (closeOnly) { spinButton.disabled = false; spinButton.textContent = 'Close'; return; }
+    spinButton.disabled = isSpinning || hasSpun || !segments.length || !(identity || previewMode);
+    spinButton.textContent = isSpinning ? 'Spinning…' : hasSpun ? 'Good luck!' : CONFIG.spinButton.text;
+  }
+
+  // ---- network ----
+  function fetchJson(url, options) {
+    const ctrl = window.AbortController ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), CONFIG.requestTimeoutSeconds * 1000) : null;
+    return fetch(url, Object.assign({}, options, ctrl ? { signal: ctrl.signal } : {}))
+      .then((resp) => resp.json().catch(() => ({})).then((data) => ({ ok: resp.ok, data: data })))
+      .finally(() => { if (timer) clearTimeout(timer); });
+  }
+
+  // ---- colour helpers ----
+  const isHex = (c) => /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(c));
+  function rgb(hex) {
+    let h = hex.slice(1);
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    const n = parseInt(h, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function shade(hex, amt) {
+    const f = (c) => Math.round(amt < 0 ? c * (1 + amt) : c + (255 - c) * amt);
+    const c = rgb(hex);
+    return 'rgb(' + f(c[0]) + ',' + f(c[1]) + ',' + f(c[2]) + ')';
+  }
+
+  // ---- wheel drawing ----
+  function setupCanvas() {
+    const size = Math.max(140, wheelFace.clientWidth); // layout size, unaffected by entrance / tilt transforms
+    const dpr = window.devicePixelRatio || 1;
+    wheelCanvas.style.width = wheelCanvas.style.height = size + 'px';
+    wheelCanvas.width = wheelCanvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    wheelCanvas._size = size;
+    wheelContainer.style.setProperty('--bulb-r', (wheelRim.clientWidth / 2 - 8) + 'px');
+  }
+  function colourFor(seg, i) {
+    return seg.isNoWin ? CONFIG.noWinColour : CONFIG.segmentColours[i % CONFIG.segmentColours.length];
+  }
+  // Word-wrap a label, shrinking the font until it fits the segment.
+  function layoutLabel(text, maxW, fs) {
+    for (; ; fs--) {
+      ctx.font = '700 ' + fs + 'px Fredoka, Poppins, -apple-system, "Segoe UI", Roboto, sans-serif';
+      const lines = []; let line = '';
+      text.split(' ').forEach((w) => {
+        const test = line ? line + ' ' + w : w;
+        if (line && ctx.measureText(test).width > maxW) { lines.push(line); line = w; } else line = test;
+      });
+      lines.push(line);
+      const fits = lines.length <= 3 && lines.every((l) => ctx.measureText(l).width <= maxW);
+      if (fits || fs <= 9) return { lines: lines, fs: fs };
+    }
+  }
+  function drawWheel() {
+    if (!segments.length) return;
+    const size = wheelCanvas._size, R = size / 2, arc = TAU / segments.length;
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.translate(R, R);
+    segments.forEach((seg, i) => {
+      const col = colourFor(seg, i), a0 = i * arc;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R, a0, a0 + arc); ctx.closePath();
+      if (isHex(col)) {
+        const g = ctx.createRadialGradient(0, 0, R * 0.1, 0, 0, R);
+        g.addColorStop(0, shade(col, -0.7)); g.addColorStop(0.55, shade(col, -0.3)); g.addColorStop(1, col);
+        ctx.fillStyle = g;
+      } else ctx.fillStyle = col;
+      ctx.fill();
+      if (highlightIndex >= 0 && i !== highlightIndex) { ctx.fillStyle = 'rgba(5, 0, 20, .62)'; ctx.fill(); }
+      // neon edge along the outside of the segment
+      if (isHex(col)) {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(0, 0, R - 2, a0, a0 + arc);
+        ctx.strokeStyle = shade(col, 0.45); ctx.lineWidth = 3; ctx.shadowColor = col; ctx.shadowBlur = 10; ctx.stroke();
+        ctx.restore();
+      }
+
+      // label
+      ctx.save();
+      ctx.rotate(a0 + arc / 2);
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff';
+      ctx.shadowColor = isHex(col) ? col : 'rgba(0,0,0,.6)'; ctx.shadowBlur = 8;
+      const lab = layoutLabel(seg.name, R * 0.46, Math.max(12, Math.round(size * 0.058)));
+      const lh = lab.fs * 1.08, total = (lab.lines.length - 1) * lh;
+      lab.lines.forEach((l, k) => ctx.fillText(l, R * 0.88, k * lh - total / 2));
+      ctx.restore();
+    });
+    // glowing dividers
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, .9)'; ctx.lineWidth = Math.max(1.5, size * 0.007);
+    ctx.shadowColor = '#fff'; ctx.shadowBlur = 8;
+    segments.forEach((_, i) => {
+      ctx.save(); ctx.rotate(i * arc);
+      ctx.beginPath(); ctx.moveTo(R * 0.2, 0); ctx.lineTo(R, 0); ctx.stroke();
+      ctx.restore();
+    });
+    ctx.restore();
+    // spotlight outline on the winner
+    if (highlightIndex >= 0) {
+      const a0 = highlightIndex * arc, col = colourFor(segments[highlightIndex], highlightIndex);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R - 2, a0, a0 + arc); ctx.closePath();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.shadowColor = isHex(col) ? col : '#fff'; ctx.shadowBlur = 22; ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---- spin ----
+  function resultIndex(data) {
+    const n = segments.length;
+    // segmentIndex refers to the server's list, so only trust it when that list is on the wheel.
+    if (liveRewards && Number.isInteger(data.segmentIndex) && data.segmentIndex >= 0 && data.segmentIndex < n &&
+        segments[data.segmentIndex].name === data.reward) return data.segmentIndex;
+    // Server did not send a usable index: find the segment by name, else any segment of the right kind.
+    let i = segments.findIndex((s) => data.won && s.name === data.reward);
+    if (i < 0) i = segments.findIndex((s) => !!s.isNoWin === !data.won);
+    return i < 0 ? 0 : i;
+  }
+
+  function previewResult() {
+    const i = Math.floor(Math.random() * segments.length), seg = segments[i];
+    return seg.isNoWin
+      ? { won: false, segmentIndex: i, preview: true }
+      : { won: true, segmentIndex: i, reward: seg.name, voucherValue: 'PREVIEW', voucherCode: 'PREVIEW-CODE', preview: true };
+  }
+
+  // Watches the wheel while it turns: pointer flick + tick sound + sparks at each divider, motion blur by speed.
+  let watchRaf = 0, lastSeg = null, lastTick = 0, lastAngle = null;
+  function wheelAngle() {
+    const m = /matrix\(([^)]+)\)/.exec(getComputedStyle(wheelCanvas).transform || '');
+    if (!m) return 0;
+    const p = m[1].split(',');
+    return Math.atan2(parseFloat(p[1]), parseFloat(p[0])) * 180 / Math.PI;
+  }
+  function tickPointer(speed) {
+    pointerEl.classList.remove('tick'); void pointerEl.offsetWidth; pointerEl.classList.add('tick');
+    sfx.tick(); buzz(5);
+    if (speed < 14) {
+      const r = pointerEl.getBoundingClientRect();
+      fx.sparks(r.left + r.width / 2, r.bottom - 6, 6, ['#FFE9A8', '#FF2BD6', '#22E1FF'], 4);
+    }
+  }
+  function startSpinFx() {
+    wheelFace.classList.remove('idle');
+    wheelContainer.classList.add('spinning');
+    setTilt(0, 0);
+    sfx.start(); buzz(15);
+    lastSeg = null; lastAngle = null;
+    cancelAnimationFrame(watchRaf);
+    const step = (t) => {
+      const ang = wheelAngle(), segDeg = 360 / segments.length;
+      let speed = 0;
+      if (lastAngle !== null) { speed = Math.abs(((ang - lastAngle + 540) % 360) - 180); }
+      lastAngle = ang;
+      wheelCanvas.style.filter = speed > 5 ? 'blur(' + Math.min(2.4, (speed - 5) * 0.25).toFixed(2) + 'px)' : '';
+      const s = Math.floor((((ang + 90) % 360) + 360) % 360 / segDeg);
+      if (lastSeg !== null && s !== lastSeg && t - lastTick > 45) { tickPointer(speed); lastTick = t; }
+      lastSeg = s;
+      watchRaf = requestAnimationFrame(step);
+    };
+    watchRaf = requestAnimationFrame(step);
+  }
+  function endSpinFx() {
+    cancelAnimationFrame(watchRaf);
+    wheelCanvas.style.filter = '';
+    wheelContainer.classList.remove('spinning');
+  }
+
+  // The wheel starts turning on the tap and keeps turning until the server's result arrives,
+  // then eases out onto the won segment, so a slow server never looks like a frozen button.
+  let freeSpinRaf = 0;
+  function startFreeSpin() {
+    wheelCanvas.style.transition = 'none';
+    let last = performance.now();
+    const step = (t) => {
+      currentRotation += (t - last) * 0.6; // degrees per ms
+      last = t;
+      wheelCanvas.style.transform = 'rotate(' + currentRotation + 'deg)';
+      freeSpinRaf = requestAnimationFrame(step);
+    };
+    freeSpinRaf = requestAnimationFrame(step);
+  }
+  function stopFreeSpin() {
+    cancelAnimationFrame(freeSpinRaf);
+    wheelCanvas.style.transform = 'rotate(' + currentRotation + 'deg)';
+    void wheelCanvas.offsetWidth; // apply the current angle before the CSS transition comes back
+    wheelCanvas.style.transition = '';
+  }
+
+  async function spin() {
+    if (closeOnly) return;
+    if (spinButton.disabled || isSpinning || !segments.length) return;
+    isSpinning = true;
+    updateSpinButton();
+    showSubtitle(CONFIG.subtitle.text);
+    trackEvent('Spin Wheel Spun', { preview: previewMode });
+    startFreeSpin();
+    startSpinFx();
+
+    let data;
+    if (previewMode) {
+      await rewardsReady;
+      data = previewResult();
+    } else {
+      try {
+        // The server decides the result (voucher allocation, caps, 30-day rule); the wheel just animates to it.
+        // Wait for the live rewards too, so segmentIndex matches the wheel being shown.
+        const both = await Promise.all([fetchJson(CONFIG.apiBase + '/api/spin', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: identity }),
+        }), rewardsReady]);
+        const res = both[0];
+        if (!res.ok) {
+          stopFreeSpin(); endSpinFx();
+          if (res.data.closed || res.data.ineligible) closeOnly = true;
+          showMessage(res.data.error || 'Something went wrong. Please try again.');
+          isSpinning = false; updateSpinButton(); return;
+        }
+        data = res.data;
+      } catch (e) {
+        stopFreeSpin(); endSpinFx();
+        showMessage('Network error. Please check your connection and try again.');
+        isSpinning = false; updateSpinButton(); return;
+      }
+    }
+
+    stopFreeSpin();
+    hasSpun = true;
+    const segDeg = 360 / segments.length;
+    const winIndex = resultIndex(data);
+    // Pointer is at the top (canvas angle 270deg); bring the centre of the chosen segment under it.
+    const target = (270 - (winIndex + 0.5) * segDeg + 720) % 360;
+    const cur = ((currentRotation % 360) + 360) % 360;
+    currentRotation += ((target - cur + 360) % 360) + 360 * (4 + Math.floor(Math.random() * 3));
+    let done = false;
+    const finish = () => {
+      if (done) return; done = true;
+      wheelCanvas.removeEventListener('transitionend', finish);
+      isSpinning = false;
+      endSpinFx();
+      highlightIndex = winIndex; drawWheel();
+      wheelContainer.classList.add('landed');
+      wheelZone.classList.add('quake');
+      sfx.land(); buzz(40);
+      const r = wheelContainer.getBoundingClientRect();
+      fx.sparks(r.left + r.width / 2, r.top + 8, 26, NEON, 7);
+      showReward(data);
+    };
+    wheelCanvas.addEventListener('transitionend', finish);
+    setTimeout(finish, CONFIG.spinDurationSeconds * 1000 + 800); // fallback
+    wheelCanvas.style.transform = 'rotate(' + currentRotation + 'deg)';
+  }
+
+  function iconFor(name) {
+    const n = String(name || '');
+    if (/coffee|tea|cafe/i.test(n)) return '☕';
+    if (/data|\bgb\b|\bmb\b|\d\s*gb/i.test(n)) return '🚀';
+    if (/voucher|coupon/i.test(n)) return '🎟️';
+    if (/reload|recharge|cash|rs\.?\s*\d/i.test(n)) return '💰';
+    return '🎁';
+  }
+
+  // Slot-machine reveal of the voucher code; the real code is kept in data-code for copying.
+  function scrambleCode(el, code) {
+    const pool = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', len = code.length, dur = 1300;
+    el.dataset.code = code;
+    el.classList.add('scrambling');
+    let start = 0, locked = 0;
+    const step = (t) => {
+      if (!start) start = t;
+      const p = Math.min(1, (t - start) / dur), n = Math.floor(p * len);
+      if (n > locked) { locked = n; sfx.lock(); }
+      let s = code.slice(0, n);
+      for (let i = n; i < len; i++) s += /[\s-]/.test(code[i]) ? code[i] : pool[Math.floor(Math.random() * pool.length)];
+      el.textContent = s;
+      if (p < 1) requestAnimationFrame(step);
+      else { el.textContent = code; el.classList.remove('scrambling'); buzz(15); }
+    };
+    requestAnimationFrame(step);
+  }
+
+  function showReward(data) {
+    trackEvent('Spin Wheel Result', { won: !!data.won, reward: data.won ? String(data.reward || '') : 'none', preview: !!data.preview });
+    recordWin(data);
+    const previewNote = data.preview ? ' (Preview only - no real voucher.)' : '';
+    $('rewardTitle').textContent = data.won ? 'You won!' : 'So close!';
+    $('prizeChip').textContent = data.won ? String(data.reward || '') : '';
+    $('rewardSubtext').textContent = (data.won
+      ? 'Voucher value: ' + data.voucherValue + '. Use the code below to redeem your reward.' + (data.expiryDate ? ' Valid until ' + data.expiryDate + '.' : '')
+      : 'Better luck next time! No reward this time. Thanks for playing!') + previewNote;
+    $('rewardText').textContent = '';
+    $('heroIcon').textContent = data.won ? iconFor(data.reward) : '🍀';
+    $('rewardHero').classList.toggle('lose', !data.won);
+    rewardWrapper.classList.toggle('visible', !!data.won && !!data.voucherCode);
+    if (data.won) rewardBox.classList.add('pulsate-animation');
+    claimButton.textContent = data.won ? CONFIG.claimButton.text : 'Close';
+    claimButton.style.background = CONFIG.claimButton.background;
+    claimButton.style.color = CONFIG.claimButton.color;
+    claimButton.style.display = data.won && !CONFIG.claimButton.enabled ? 'none' : '';
+    // The tap follows this href: a deep link if one is set for winners, otherwise the close link.
+    const openUrl = data.won && CONFIG.claimButton.url;
+    claimButton.href = openUrl || CONFIG.closeUrl;
+    claimButton.onclick = () => {
+      if (data.won) trackEvent('Spin Wheel Claimed', { reward: String(data.reward || ''), preview: !!data.preview });
+      if (!openUrl) onCloseTap();
+    };
+
+    // Let the landed segment glow for a moment, then flip the card over.
+    setTimeout(() => {
+      spinModal.classList.add('leaving');
+      setTimeout(() => {
+        spinModal.style.display = 'none';
+        spinStars.stop();
+        rewardModal.style.display = 'flex';
+        rewardStars.start();
+        splitLetters($('rewardTitle'), '.35s');
+        if (data.won) {
+          sfx.win(); buzz([30, 40, 60]);
+          if (data.voucherCode) setTimeout(() => scrambleCode($('rewardText'), String(data.voucherCode)), 900);
+          if (CONFIG.enableConfettiOnWin) { setTimeout(() => fx.confetti(), 250); setTimeout(() => fx.fireworks(4), 700); }
+        } else {
+          sfx.lose();
+          if (CONFIG.autoCloseNoWinSeconds > 0) autoCloseNoWin(CONFIG.autoCloseNoWinSeconds);
+        }
+      }, 430);
+    }, 1200);
+  }
+
+  // No win: hide the Close button, count down, then close. iOS only closes on a link click,
+  // so the close link is clicked from script; the × stays as a backup.
+  function autoCloseNoWin(seconds) {
+    claimButton.style.display = 'none';
+    const bar = $('countdown');
+    bar.style.setProperty('--dur', seconds + 's');
+    bar.classList.add('run');
+    const sub = $('rewardSubtext'), base = sub.textContent;
+    const tick = () => {
+      if (seconds <= 0) {
+        onCloseTap();
+        const a = document.createElement('a');
+        a.href = CONFIG.closeUrl;
+        document.body.appendChild(a);
+        a.click();
+        return;
+      }
+      sub.textContent = base + ' Closing in ' + seconds + '...';
+      seconds--;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  // ---- copy ----
+  function copyCode() {
+    const el = $('rewardText'), text = el.dataset.code || el.textContent;
+    if (!text) return;
+    const ok = () => {
+      copyInstructionEl.textContent = 'Code copied!';
+      copyInstructionEl.style.color = CONFIG.copyInstruction.copiedColor;
+      rewardBox.classList.add('copied');
+      const toast = $('toast'); toast.classList.remove('show'); void toast.offsetWidth; toast.classList.add('show');
+      const r = $('copyBtn').getBoundingClientRect();
+      fx.sparks(r.left + r.width / 2, r.top + r.height / 2, 18, ['#4ADE80', '#FFFFFF', '#22E1FF'], 5);
+      sfx.copy(); buzz(20);
+      trackEvent('Spin Wheel Code Copied');
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok).catch(() => fallback(text, ok));
+    else fallback(text, ok);
+  }
+  function fallback(text, ok) {
+    const i = document.createElement('input');
+    i.value = text; i.style.position = 'absolute'; i.style.left = '-9999px';
+    document.body.appendChild(i); i.select(); document.execCommand('copy'); i.remove(); ok();
+  }
+  $('copyBtn').addEventListener('click', (e) => { e.stopPropagation(); copyCode(); });
+  rewardWrapper.addEventListener('click', copyCode);
+
+  spinButton.addEventListener('click', spin);
+  spinButton.addEventListener('click', () => { if (closeOnly) closePopup(); });
+  wheelContainer.addEventListener('click', spin);
+  wheelCanvas.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); spin(); } });
+
+  // ---- init: draw the default segments at once, then swap in the admin-configured rewards ----
+  function setSegments(list) {
+    segments = list.length < 2 ? list.concat(list) : list.slice();
+    drawWheel();
+  }
+  // Resolves when the live rewards are on the wheel, or when all attempts failed (defaults stay).
+  function loadRewards() {
+    return new Promise((resolve) => {
+      (function attempt(n) {
+        fetchJson(CONFIG.apiBase + '/api/rewards')
+          .then((res) => {
+            const list = Array.isArray(res.data) ? res.data.filter((s) => s && s.name) : [];
+            if (!res.ok || !list.length) throw new Error('no rewards');
+            setSegments(list);
+            liveRewards = true;
+            updateSpinButton();
+            resolve();
+          })
+          .catch(() => {
+            if (n < CONFIG.rewardsLoadAttempts) setTimeout(() => attempt(n + 1), 1500 * n);
+            else resolve();
+          });
+      })(1);
+    });
+  }
+
+  setupCanvas();
+  setSegments((CONFIG.defaultSegments || []).filter((s) => s && s.name));
+  if (window.ResizeObserver) new ResizeObserver(() => { setupCanvas(); drawWheel(); }).observe(wheelContainer);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawWheel); // redraw labels once the font loads
+  spinStars.start();
+  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text + (previewMode ? ' (Preview mode)' : ''));
+  else showMessage('Please open this page from the MyDialog app to spin the wheel.');
+  updateSpinButton();
+  trackEvent('Spin Wheel Viewed', { preview: previewMode });
+  const rewardsReady = loadRewards();
+  // Campaign schedule: show "closed, opens at ..." up front instead of after a tap.
+  // Status gate (the page stays hidden until this answers, at most 4 s - see the top of the file):
+  // paused / outside the schedule -> close without showing anything;
+  // already won / out of spins -> show why, and the button just closes.
+  const reveal = () => document.documentElement.classList.remove('stw-gate');
+  if (identity && !previewMode) {
+    fetchJson(CONFIG.apiBase + '/api/status?identity=' + encodeURIComponent(identity)).then((res) => {
+      const st = res.ok && res.data ? res.data : {};
+      if (isSpinning || hasSpun) return reveal();
+      if (st.open === false) {
+        trackEvent('Spin Wheel Not Shown', { reason: st.paused ? 'paused' : 'schedule' });
+        return closePopup();
+      }
+      if (st.eligible === false) {
+        trackEvent('Spin Wheel Not Eligible', { reason: String(st.reason || '') });
+        closeOnly = true;
+        showMessage(st.message || "You can't spin right now.");
+        updateSpinButton();
+      }
+      reveal();
+    }).catch(reveal); // server unreachable: show the wheel; the spin itself is still checked
+  } else reveal();
+})();
+</script>
+</body>
+</html>

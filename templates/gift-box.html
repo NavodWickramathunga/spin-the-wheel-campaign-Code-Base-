@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+  // -------------------- Configurable Settings --------------------
+  const CONFIG = {
+    // Which game this is (sent with every CleverTap event as "game").
+    game: "gift-box",
+    includeDismissButton: true,
+    // Brand palette. Replace with the exact values from your brand guidelines.
+    brand: { primary: "#E4002B", dark: "#8E0D2B", accent: "#FFB81C" },
+    brandName: "Dialog Pay",
+    // Full HTTPS URL of the official logo (white version works best on the header). "" shows brandName as text.
+    logoUrl: "",
+    // Header band behind the title.
+    background: "linear-gradient(135deg, #E4002B 0%, #B8062B 55%, #7E0A27 100%)",
+    footerText: "Terms & conditions apply",
+    enableConfettiOnWin: true,
+    sound: false,    // subtle UI sounds (synthesised, no files)
+    haptics: true,   // light vibration on key moments (Android)
+    // url: leave "" to just close the popup (the code is already shown and saved), or set a deep link to open a screen.
+    claimButton: { enabled: true, text: "Collect Now", url: "" },
+    // CleverTap closes the popup for any wzrk:// link (note: wzrk, not wzkr).
+    closeUrl: "wzrk://close",
+    // After "Better luck next time" the popup closes by itself after this many seconds (0 = show a Close button instead).
+    autoCloseNoWinSeconds: 3,
+    // Backend address (full public HTTPS URL).
+    apiBase: "https://stw-spin-wheel-1443.web.app",
+    // The customer's CleverTap Identity (their mobile number).
+    // If left empty or still an unreplaced placeholder, the page falls back to ?identity= in the URL.
+    identity: "{{Profile.Identity | default: '#'}}",
+    // When opened outside the app with no identity (CleverTap dashboard preview, desktop browser),
+    // play a local demo round. Nothing is sent to the server and no voucher is issued.
+    previewModeOutsideApp: true,
+    // Shown instantly while the live rewards load from the server.
+    // Keep this in line with the admin "Wheel segments".
+    defaultSegments: [
+      { name: "Better luck next time", isNoWin: true },
+      { name: "Rs. 500 Voucher", isNoWin: false },
+      { name: "5GB Data", isNoWin: false },
+      { name: "Free Coffee", isNoWin: false },
+      { name: "Rs. 100 Reload", isNoWin: false },
+    ],
+    // Optional emoji per reward name, e.g. { "Free Coffee": "☕" }. Others are guessed from the name.
+    rewardIcons: {},
+    noWinIcon: "🍀",
+    rewardsLoadAttempts: 3,
+    requestTimeoutSeconds: 12,
+    mainTitle: { text: "Pick a <span class='hl'>Gift!</span>", fontSize: "24px" },
+    subtitle: { text: "One tap could unwrap your reward. Choose a box!", fontSize: "13.5px" },
+    button: { text: "Pick one for me", busyText: "Unwrapping...", style: "ghost" },
+    hintText: "Tap a box to open it",
+  };
+  // -------------------- End of Configurable Settings --------------------
+  // Hide the popup until the server confirms this customer can play (no flash before a silent close).
+  // Safety net: it is shown anyway after 4 seconds.
+  (function () {
+    var id = String(CONFIG.identity || '').trim(), q = new URLSearchParams(location.search);
+    if ((id && !/[{}#]/.test(id)) || q.get('identity') || q.get('mobile')) {
+      document.documentElement.classList.add('stw-gate');
+      setTimeout(function () { document.documentElement.classList.remove('stw-gate'); }, 4000);
+    }
+  })();
+</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Pick a Gift!</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  html.stw-gate body { visibility: hidden; }
+  :root {
+    --brand: #E4002B; --brand-dark: #8E0D2B; --accent: #FFB81C; --brand-rgb: 228, 0, 43;
+    --ink: #111827; --ink-2: #4B5563; --ink-3: #6B7280; --line: #E5E7EB; --surface: #F7F7F9;
+    --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --ease: cubic-bezier(.2, .8, .2, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; width: 100%; margin: 0; display: flex; align-items: center; justify-content: center;
+    background: transparent; font-family: var(--font); color: var(--ink); -webkit-tap-highlight-color: transparent; -webkit-font-smoothing: antialiased; }
+
+  /* ---------- card ---------- */
+  .modal { position: relative; overflow: hidden; display: flex; flex-direction: column; width: 100%; max-width: 340px;
+    max-height: 640px; background: #fff; border-radius: 24px; text-align: center;
+    box-shadow: 0 24px 60px -18px rgba(17, 24, 39, .45), 0 2px 6px rgba(17, 24, 39, .08);
+    animation: cardIn .5s var(--ease) both; }
+  .modal.leaving { animation: cardOut .28s ease-in forwards; }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes cardOut { to { opacity: 0; transform: translateY(-8px) scale(.98); } }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .reveal { animation: fadeUp .5s var(--ease) both; animation-delay: var(--d, 0s); }
+
+  /* header band */
+  .hero { position: relative; isolation: isolate; overflow: hidden; flex-shrink: 0; padding: 18px 22px 64px; color: #fff;
+    border-radius: 0 0 50% 50% / 0 0 26px 26px; }
+  .hero::before { content: ""; position: absolute; inset: -20px; z-index: -1; pointer-events: none;
+    background: radial-gradient(rgba(255, 255, 255, .16) 1px, transparent 1.6px) 0 0 / 16px 16px;
+    -webkit-mask: linear-gradient(160deg, #000 0%, transparent 65%); mask: linear-gradient(160deg, #000 0%, transparent 65%);
+    animation: drift 30s linear infinite; }
+  .hero::after { content: ""; position: absolute; z-index: -1; width: 260px; height: 260px; right: -110px; top: -120px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 255, 255, .14), rgba(255, 255, 255, 0) 70%); pointer-events: none; }
+  @keyframes drift { to { background-position: 160px 160px; } }
+  .brand-row { display: flex; align-items: center; justify-content: space-between; min-height: 32px; }
+  .brand { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; letter-spacing: .2px; }
+  .brand img { height: 24px; width: auto; display: block; }
+  .brand .tag { font-size: 10px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; padding: 3px 8px; border-radius: 999px;
+    background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .28); }
+  .close-btn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; color: #fff; text-decoration: none; cursor: pointer;
+    background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .25); transition: background .2s, transform .15s; }
+  .close-btn:active { transform: scale(.92); background: rgba(255, 255, 255, .28); }
+  .close-btn svg { width: 12px; height: 12px; }
+  .close-btn.dark { position: absolute; top: 16px; right: 16px; z-index: 3; color: var(--ink-2); background: var(--surface); border-color: var(--line); }
+  h1 { margin: 16px 0 8px; font-size: 24px; font-weight: 800; line-height: 1.2; letter-spacing: -.4px; }
+  h1 .hl { color: var(--accent); }
+  p { margin: 0 auto; max-width: 270px; font-size: 13.5px; line-height: 1.5; font-weight: 500; color: rgba(255, 255, 255, .88); }
+  p.error { display: inline-block; padding: 8px 12px; border-radius: 10px; font-weight: 600; color: #fff;
+    background: rgba(0, 0, 0, .22); border: 1px solid rgba(255, 255, 255, .3); animation: shake .4s; }
+  @keyframes shake { 25%, 75% { transform: translateX(-4px); } 50% { transform: translateX(4px); } }
+
+  /* body */
+  .body { display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 0 22px 16px; }
+  .game-area { position: relative; width: 100%; margin-top: -50px; }
+
+  /* ---------- buttons ---------- */
+  .action-btn { position: relative; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    width: 100%; height: 52px; padding: 0 24px; border: 0; border-radius: 14px; font: 700 16px/1 var(--font); letter-spacing: .1px;
+    text-decoration: none; cursor: pointer; background: var(--brand); color: #fff;
+    box-shadow: 0 8px 18px -8px rgba(var(--brand-rgb), .65); transition: transform .12s, box-shadow .2s, opacity .2s, filter .2s; }
+  .action-btn.ghost { background: #fff; color: var(--brand); box-shadow: inset 0 0 0 1.5px rgba(var(--brand-rgb), .35); }
+  .action-btn:active:not(:disabled) { transform: scale(.98); }
+  .action-btn:disabled { cursor: default; opacity: .7; box-shadow: none; }
+  .action-btn.ghost:disabled { box-shadow: inset 0 0 0 1.5px rgba(var(--brand-rgb), .2); }
+  .action-btn .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid rgba(255, 255, 255, .4); border-top-color: #fff; animation: rot .7s linear infinite; }
+  .action-btn.ghost .spinner { border-color: rgba(var(--brand-rgb), .25); border-top-color: var(--brand); }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  .ripple { position: absolute; width: 20px; height: 20px; margin: -10px; border-radius: 50%; background: rgba(255, 255, 255, .4); pointer-events: none; animation: ripple .55s ease-out forwards; }
+  @keyframes ripple { to { transform: scale(22); opacity: 0; } }
+  .footer { margin-top: 10px; font-size: 11px; font-weight: 500; color: var(--ink-3); display: inline-flex; align-items: center; gap: 6px; }
+  .footer:empty { display: none; }
+  .footer svg { width: 12px; height: 12px; }
+  .hint { font-size: 12.5px; font-weight: 600; color: var(--ink-3); min-height: 16px; }
+
+  /* ---------- result ---------- */
+  .modal.reward { padding: 34px 22px 22px; align-items: center; gap: 0; }
+  .modal.reward::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5px; background: linear-gradient(90deg, var(--brand), var(--brand-dark)); }
+  .status { position: relative; width: 76px; height: 76px; margin: 6px 0 16px; }
+  .status .disc { position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--brand), var(--brand-dark)); box-shadow: 0 10px 22px -8px rgba(var(--brand-rgb), .6);
+    animation: popIn .5s cubic-bezier(.3, 1.5, .5, 1) .1s both; }
+  .status::before, .status::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--brand); opacity: 0;
+    animation: ring 2.4s ease-out .6s infinite; }
+  .status::after { animation-delay: 1.4s; }
+  @keyframes popIn { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes ring { 0% { opacity: .5; transform: scale(1); } 100% { opacity: 0; transform: scale(1.7); } }
+  .status svg { width: 40px; height: 40px; }
+  .status .check path { fill: none; stroke: #fff; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 40; stroke-dashoffset: 40;
+    animation: draw .45s var(--ease) .5s forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .status .gift { display: none; }
+  .status.lose::before, .status.lose::after { display: none; }
+  .status.lose .disc { background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); animation: popIn .5s cubic-bezier(.3, 1.5, .5, 1) .1s both, wobble 1s ease-in-out .7s; }
+  .status.lose .check { display: none; }
+  .status.lose .gift { display: block; }
+  @keyframes wobble { 20% { transform: rotate(-10deg); } 40% { transform: rotate(8deg); } 60% { transform: rotate(-5deg); } 80% { transform: rotate(2deg); } }
+
+  .reward-title { margin: 0; color: var(--ink); font-size: 22px; }
+  .won-line { margin-top: 6px; font-size: 15px; font-weight: 500; color: var(--ink-2); }
+  .won-line b { display: block; margin-top: 2px; font-size: 20px; font-weight: 800; color: var(--brand); letter-spacing: -.2px; }
+  .won-line:empty { display: none; }
+  .reward-subtext { margin-top: 8px; font-size: 13px; line-height: 1.5; color: var(--ink-3); max-width: 280px; }
+
+  .receipt { width: 100%; margin-top: 18px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); text-align: left; overflow: hidden; }
+  .receipt[hidden] { display: none; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 11px 16px; font-size: 13px; border-bottom: 1px dashed var(--line); }
+  .row[hidden] { display: none; }
+  .row span { color: var(--ink-3); font-weight: 500; }
+  .row strong { color: var(--ink); font-weight: 700; text-align: right; }
+  .reward-wrapper { display: none; padding: 12px 14px 14px; }
+  .reward-wrapper.visible { display: block; }
+  .code-label { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--ink-3); margin: 0 2px 8px; }
+  .reward-box { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 10px 10px 14px; border-radius: 12px; background: #fff; border: 1.5px dashed rgba(var(--brand-rgb), .45); cursor: pointer; }
+  .reward-box::after { content: ""; position: absolute; top: 0; bottom: 0; left: -50%; width: 30%; transform: skewX(-20deg); pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .9), transparent); animation: sheen 3.5s ease-in-out 1.6s infinite; }
+  @keyframes sheen { 0% { left: -50%; } 40%, 100% { left: 130%; } }
+  #rewardText { font: 700 18px/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 1.5px; color: var(--ink); word-break: break-all; }
+  .copy-btn { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 9px; cursor: pointer;
+    font: 700 12px var(--font); color: var(--brand); background: rgba(var(--brand-rgb), .08); border: 1px solid rgba(var(--brand-rgb), .25); transition: background .2s, transform .12s; }
+  .copy-btn:active { transform: scale(.95); }
+  .copy-btn svg { width: 14px; height: 14px; }
+  .copy-btn .ic-check { display: none; }
+  .reward-box.copied { border-color: rgba(21, 128, 61, .5); }
+  .reward-box.copied .copy-btn { color: #15803D; background: #DCFCE7; border-color: #86EFAC; }
+  .reward-box.copied .ic-copy { display: none; }
+  .reward-box.copied .ic-check { display: block; animation: popIn .3s cubic-bezier(.3, 1.5, .5, 1); }
+  .copy-instruction { margin: 8px 2px 0; font-size: 11.5px; font-weight: 500; color: var(--ink-3); transition: color .2s; }
+  @keyframes attention { 0%, 100% { box-shadow: 0 0 0 0 rgba(var(--brand-rgb), 0); } 50% { box-shadow: 0 0 0 5px rgba(var(--brand-rgb), .12); } }
+  .pulsate-animation { animation: attention 1.6s ease-in-out 1.2s 2; }
+  .claim-wrap { width: 100%; margin-top: 18px; }
+  .countdown { width: 100%; height: 4px; margin-top: 18px; border-radius: 4px; background: var(--line); overflow: hidden; display: none; }
+  .countdown.run { display: block; }
+  .countdown span { display: block; height: 100%; background: var(--brand); transform-origin: left; animation: drain var(--dur, 3s) linear forwards; }
+  @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+  /* ---------- game ---------- */
+  .boxes { display: flex; justify-content: center; gap: 10px; padding: 46px 12px 14px; border-radius: 20px; background: #fff;
+    box-shadow: 0 14px 34px -10px rgba(17, 24, 39, .35); }
+  .gbox { color: var(--ink); position: relative; flex: 1; max-width: 86px; aspect-ratio: 1 / 1.05; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; }
+  .gbox:disabled { cursor: default; color: var(--ink); } /* disabled buttons grey out text, which also fades colour emoji */
+  .gift { position: absolute; inset: 0; transform-origin: 50% 100%; animation: bob 2.4s ease-in-out infinite; animation-delay: calc(var(--i) * .35s); }
+  .gbody { position: absolute; left: 6%; right: 6%; top: 34%; bottom: 0; border-radius: 6px;
+    background: linear-gradient(160deg, var(--brand), var(--brand-dark)); box-shadow: inset 0 -6px 0 rgba(0, 0, 0, .12); }
+  .gbody::before, .lid::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 18%; transform: translateX(-50%); background: var(--accent); }
+  .lid { position: absolute; left: 0; right: 0; top: 16%; height: 22%; z-index: 2; border-radius: 6px;
+    background: linear-gradient(160deg, var(--brand), var(--brand-dark)); box-shadow: 0 3px 0 rgba(0, 0, 0, .14);
+    transition: transform .6s cubic-bezier(.3, 1.4, .5, 1), opacity .5s ease .1s; }
+  .bow { position: absolute; left: 50%; top: 0; width: 46%; height: 20%; transform: translateX(-50%); }
+  .bow::before, .bow::after { content: ""; position: absolute; bottom: 0; width: 50%; height: 100%; border: 4px solid var(--accent); border-radius: 50% 50% 10% 50%; }
+  .bow::before { left: 0; transform: rotate(-20deg); }
+  .bow::after { right: 0; transform: rotate(20deg) scaleX(-1); }
+  .gbox.shake .gift { animation: shakeBox .45s ease-in-out infinite; }
+  @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+  @keyframes shakeBox { 25% { transform: rotate(-7deg); } 75% { transform: rotate(7deg); } }
+  .gbox.open .gift { animation: none; }
+  .gbox.open .lid, .gbox.open .bow { transform: translate(-10%, -150%) rotate(-28deg); opacity: 0; }
+  .gbox.open .bow { transition: transform .6s cubic-bezier(.3, 1.4, .5, 1), opacity .5s ease .1s; }
+  .gprize { position: absolute; left: -12px; right: -12px; top: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    opacity: 0; transform: translateY(24px) scale(.5); pointer-events: none; transition: opacity .4s ease .15s, transform .55s cubic-bezier(.3, 1.5, .5, 1) .15s; }
+  .gbox.open .gprize { opacity: 1; transform: translateY(-34px) scale(1); }
+  .gprize .pi { font-size: 32px; line-height: 1; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .2)); }
+  .gprize .pn { padding: 3px 7px; border-radius: 7px; font-size: 11px; font-weight: 800; line-height: 1.15; color: #fff; background: var(--brand);
+    box-shadow: 0 3px 8px rgba(var(--brand-rgb), .35); }
+  .gprize.lose .pn { color: var(--ink-2); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+  .gbox.dim { opacity: .35; filter: grayscale(.7); transition: opacity .4s, filter .4s; }
+  .gbox.dim .gift { animation: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hero::before, .status::before, .status::after, .reward-box::after { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="modal" id="gameModal">
+    <header class="hero" id="hero">
+      <div class="brand-row reveal" style="--d:.05s">
+        <span class="brand" id="brand"></span>
+        <a class="close-btn" href="wzrk://close" aria-label="Close">
+          <svg viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </a>
+      </div>
+      <h1 class="title reveal" id="mainTitle" style="--d:.12s"></h1>
+      <p id="subtitle" class="reveal" style="--d:.2s"></p>
+    </header>
+    <div class="body">
+      <div class="game-area reveal" id="gameArea" style="--d:.28s">
+        <div class="boxes" id="boxes"></div>
+      </div>
+      <div class="hint reveal" id="hint" style="--d:.32s"></div>
+      <div class="reveal" style="width:100%; --d:.36s">
+        <button class="action-btn" id="actionButton"></button>
+        <div class="footer" id="footer"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal reward" id="rewardModal" style="display:none;">
+    <a class="close-btn dark" href="wzrk://close" aria-label="Close">
+      <svg viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </a>
+    <div class="status" id="status">
+      <div class="disc">
+        <svg class="check" viewBox="0 0 40 40"><path d="M10 21l7 7 13-15"/></svg>
+        <svg class="gift" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="8" width="17" height="4" rx="1"/><path d="M5 12v8h14v-8M12 8v12M12 8c-1.5-3-5-3.5-5-1.2C7 8 9.5 8 12 8zm0 0c1.5-3 5-3.5 5-1.2C17 8 14.5 8 12 8z"/></svg>
+      </div>
+    </div>
+    <h1 class="reward-title reveal" id="rewardTitle" style="--d:.2s"></h1>
+    <div class="won-line reveal" id="wonLine" style="--d:.28s"></div>
+    <div id="rewardSubtext" class="reward-subtext reveal" style="--d:.34s"></div>
+    <div class="receipt reveal" id="receipt" style="--d:.42s" hidden>
+      <div class="row"><span>Reward</span><strong id="rowReward"></strong></div>
+      <div class="row"><span>Voucher value</span><strong id="rowValue"></strong></div>
+      <div class="row" id="rowExpiryWrap" hidden><span>Valid until</span><strong id="rowExpiry"></strong></div>
+      <div class="reward-wrapper" id="rewardWrapper">
+        <div class="code-label">Voucher code</div>
+        <div class="reward-box" id="rewardBox">
+          <span id="rewardText"></span>
+          <button id="copyBtn" class="copy-btn" title="Copy to clipboard" aria-label="Copy code">
+            <svg class="ic-copy" viewBox="0 0 20 21" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M13 13.8444V17.8444C13 18.4444 12.6 18.8444 12 18.8444H3C2.4 18.8444 2 18.4444 2 17.8444V8.84442C2 8.24442 2.4 7.84442 3 7.84442H7V3.84442C7 3.24442 7.4 2.84442 8 2.84442H17C17.6 2.84442 18 3.24442 18 3.84442V12.8444C18 13.4444 17.6 13.8444 17 13.8444H13ZM12 13.8444H8C7.4 13.8444 7 13.4444 7 12.8444V8.84442H3V17.8444H12V13.8444ZM17 3.84442H8V12.8444H17V3.84442Z" fill="currentColor"/></svg>
+            <svg class="ic-check" viewBox="0 0 20 20" fill="none"><path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span id="copyLabel">Copy</span>
+          </button>
+        </div>
+        <div class="copy-instruction" id="copyInstruction">Tap the code to copy it</div>
+      </div>
+    </div>
+    <div class="claim-wrap reveal" style="--d:.5s"><a class="action-btn" id="claimButton" href="wzrk://close">Collect Now</a></div>
+    <div class="countdown" id="countdown"><span></span></div>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const gameModal = $('gameModal'), rewardModal = $('rewardModal'), subtitleEl = $('subtitle'), hintEl = $('hint');
+  const actionBtn = $('actionButton'), claimButton = $('claimButton');
+  const rewardWrapper = $('rewardWrapper'), rewardBox = $('rewardBox'), copyInstructionEl = $('copyInstruction');
+  const TAU = Math.PI * 2;
+  const rnd = (a, b) => Math.random() * (b - a) + a;
+  const reducedMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let rewards = [], liveRewards = false, isPlaying = false, hasPlayed = false;
+  let closeOnly = false; // this customer can't play now (already won / out of plays): the button just closes
+
+  // ---- CleverTap bridge (Android: window.CleverTap, iOS: webkit message handler) ----
+  // Event names match the wheel templates, so one "exclude recent winners" rule covers every game.
+  const ctAndroid = window.CleverTap;
+  const ctIOS = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.clevertap;
+  const inApp = !!(ctAndroid || ctIOS);
+  function trackEvent(name, props) {
+    props = Object.assign({ game: CONFIG.game }, props || {});
+    try {
+      if (ctAndroid && ctAndroid.pushEvent) ctAndroid.pushEvent(name, JSON.stringify(props));
+      else if (ctIOS) ctIOS.postMessage({ action: 'recordEventWithProps', event: name, properties: props });
+    } catch (e) { /* analytics must never break the game */ }
+  }
+  function pushProfile(props) {
+    try {
+      if (ctAndroid && ctAndroid.pushProfile) ctAndroid.pushProfile(JSON.stringify(props));
+      else if (ctIOS) ctIOS.postMessage({ action: 'profilePush', properties: props });
+    } catch (e) { /* never break the game */ }
+  }
+  function recordWin(data) {
+    if (data.preview || !data.won || !data.voucherCode) return;
+    const props = { voucher_code: String(data.voucherCode), reward: String(data.reward || ''), voucher_value: String(data.voucherValue || '') };
+    trackEvent('Spin Wheel Won', props);
+    pushProfile({ 'STW Last Voucher Code': props.voucher_code, 'STW Last Reward': props.reward, 'STW Last Voucher Value': props.voucher_value });
+  }
+  // Closing is done by the tapped link itself (href = closeUrl): iOS CleverTap only acts on links.
+  function onCloseTap() {
+    trackEvent('Spin Wheel Closed', { spun: hasPlayed });
+    try { if (ctAndroid && ctAndroid.dismissInAppNotification) ctAndroid.dismissInAppNotification(); } catch (e) { /* the link still closes it */ }
+  }
+  function closePopup() {
+    onCloseTap();
+    const a = document.createElement('a');
+    a.href = CONFIG.closeUrl;
+    document.body.appendChild(a);
+    a.click();
+  }
+
+  // Identity (mobile number) comes from CleverTap / the app link (?identity=...)
+  const cfgIdentity = String(CONFIG.identity || '').trim();
+  const params = new URLSearchParams(location.search);
+  const identity = (cfgIdentity && !/[{}#]/.test(cfgIdentity) ? cfgIdentity : params.get('identity') || params.get('mobile') || '').trim();
+  const previewMode = !identity && !inApp && CONFIG.previewModeOutsideApp;
+
+  // ---- feedback: haptics + optional sound ----
+  function buzz(pattern) {
+    if (!CONFIG.haptics || !navigator.vibrate) return;
+    try { navigator.vibrate(pattern); } catch (e) { /* not supported */ }
+  }
+  let actx = null;
+  function tone(freq, dur, vol, when) {
+    if (!CONFIG.sound) return;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      const t = actx.currentTime + (when || 0), o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'sine'; o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + dur + 0.05);
+    } catch (e) { /* audio unavailable */ }
+  }
+  const sfx = {
+    tick: () => tone(1200, .03, .02),
+    win: () => { tone(660, .18, .06); tone(880, .18, .06, .12); tone(1175, .3, .06, .24); },
+    lose: () => { tone(440, .2, .04); tone(392, .3, .04, .15); },
+    copy: () => tone(990, .1, .05),
+  };
+
+  // ---- apply config ----
+  const root = document.documentElement;
+  const hexRgb = (h) => { h = String(h).replace('#', ''); if (h.length === 3) h = h.split('').map((c) => c + c).join(''); const n = parseInt(h, 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(', '); };
+  root.style.setProperty('--brand', CONFIG.brand.primary);
+  root.style.setProperty('--brand-dark', CONFIG.brand.dark);
+  root.style.setProperty('--accent', CONFIG.brand.accent);
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(CONFIG.brand.primary)) root.style.setProperty('--brand-rgb', hexRgb(CONFIG.brand.primary));
+  $('hero').style.background = CONFIG.background;
+  const brandEl = $('brand');
+  if (CONFIG.logoUrl) {
+    const img = new Image(); img.src = CONFIG.logoUrl; img.alt = CONFIG.brandName || '';
+    brandEl.appendChild(img);
+  } else brandEl.appendChild(document.createTextNode(CONFIG.brandName || ''));
+  const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = 'Rewards';
+  brandEl.appendChild(tag);
+  $('mainTitle').innerHTML = CONFIG.mainTitle.text;
+  $('mainTitle').style.fontSize = CONFIG.mainTitle.fontSize || '';
+  subtitleEl.style.fontSize = CONFIG.subtitle.fontSize || '';
+  if (CONFIG.footerText) $('footer').innerHTML = '<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.2V11M8 5v.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  $('footer').appendChild(document.createTextNode(CONFIG.footerText || ''));
+  document.querySelectorAll('.close-btn').forEach((b) => {
+    b.href = CONFIG.closeUrl;
+    if (!CONFIG.includeDismissButton) b.style.display = 'none';
+    else b.addEventListener('click', onCloseTap);
+  });
+  document.querySelectorAll('.action-btn').forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => {
+      if (btn.disabled) return;
+      const r = btn.getBoundingClientRect(), s = document.createElement('span');
+      s.className = 'ripple'; s.style.left = (e.clientX - r.left) + 'px'; s.style.top = (e.clientY - r.top) + 'px';
+      btn.appendChild(s); setTimeout(() => s.remove(), 600);
+    });
+  });
+
+  function showMessage(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.remove('error'); void subtitleEl.offsetWidth; // replay the shake
+    subtitleEl.classList.add('error');
+  }
+  function showSubtitle(text) {
+    subtitleEl.textContent = text;
+    subtitleEl.classList.remove('error');
+  }
+  const canPlay = () => !isPlaying && !hasPlayed && !closeOnly && rewards.length > 0 && !!(identity || previewMode);
+  // A game can keep its button usable after the round has started (e.g. "Reveal" on the scratch card).
+  const gameButtonActive = () => !closeOnly && typeof GAME !== 'undefined' && !!(GAME.buttonActive && GAME.buttonActive());
+  function updateButton() {
+    actionBtn.className = 'action-btn' + (CONFIG.button.style === 'ghost' && !closeOnly ? ' ghost' : '');
+    if (closeOnly) { actionBtn.disabled = false; actionBtn.textContent = 'Close'; return; }
+    if (gameButtonActive()) { actionBtn.disabled = false; actionBtn.textContent = CONFIG.button.text; return; }
+    actionBtn.disabled = !canPlay();
+    if (isPlaying) actionBtn.innerHTML = '<span class="spinner"></span>' + CONFIG.button.busyText;
+    else actionBtn.textContent = hasPlayed ? 'Good luck!' : CONFIG.button.text;
+  }
+
+  // ---- network ----
+  function fetchJson(url, options) {
+    const ctrl = window.AbortController ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), CONFIG.requestTimeoutSeconds * 1000) : null;
+    return fetch(url, Object.assign({}, options, ctrl ? { signal: ctrl.signal } : {}))
+      .then((resp) => resp.json().catch(() => ({})).then((data) => ({ ok: resp.ok, data: data })))
+      .finally(() => { if (timer) clearTimeout(timer); });
+  }
+
+  // ---- rewards & icons ----
+  function iconFor(r) {
+    if (!r) return '🎁';
+    if (CONFIG.rewardIcons && CONFIG.rewardIcons[r.name]) return CONFIG.rewardIcons[r.name];
+    if (r.isNoWin) return CONFIG.noWinIcon || '🍀';
+    const n = String(r.name).toLowerCase();
+    if (/\b\d+\s*(gb|mb)\b|data/.test(n)) return '📶';
+    if (/coffee|tea|food|meal|burger|pizza/.test(n)) return '☕';
+    if (/reload|airtime|top.?up|recharge/.test(n)) return '📱';
+    if (/cash|rs\.?|lkr|voucher|discount|off\b|%/.test(n)) return '🎟️';
+    return '🎁';
+  }
+  const uniqueRewards = () => rewards.filter((r, i) => rewards.findIndex((x) => x.name === r.name) === i);
+  function rewardFor(data) {
+    return uniqueRewards().find((r) => (data.won ? !r.isNoWin && r.name === data.reward : r.isNoWin)) ||
+      { name: data.won ? String(data.reward || 'Reward') : (uniqueRewards().find((r) => r.isNoWin) || {}).name || 'Better luck next time', isNoWin: !data.won };
+  }
+  // Other rewards to show on the items the customer didn't pick ("what you could have won").
+  function decoys(n, picked) {
+    const pool = uniqueRewards().filter((r) => r.name !== picked.name);
+    const src = pool.length ? pool : uniqueRewards();
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(src[(i + Math.floor(Math.random() * src.length)) % src.length]);
+    return out;
+  }
+  function previewResult() {
+    const list = uniqueRewards(), seg = list[Math.floor(Math.random() * list.length)];
+    return seg.isNoWin
+      ? { won: false, reward: seg.name, preview: true }
+      : { won: true, reward: seg.name, voucherValue: 'PREVIEW', voucherCode: 'PREVIEW-CODE', expiryDate: '', preview: true };
+  }
+
+  // ---- play: the server decides the result (voucher, caps, cooldown); the game only reveals it ----
+  async function play() {
+    if (!canPlay()) return null;
+    isPlaying = true;
+    updateButton();
+    showSubtitle(CONFIG.subtitle.text);
+    trackEvent('Spin Wheel Spun', { preview: previewMode });
+    buzz(10);
+    let data;
+    if (previewMode) {
+      await rewardsReady;
+      await new Promise((r) => setTimeout(r, 450)); // feel like a real round trip
+      data = previewResult();
+    } else {
+      try {
+        const both = await Promise.all([fetchJson(CONFIG.apiBase + '/api/spin', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: identity }),
+        }), rewardsReady]);
+        const res = both[0];
+        if (!res.ok) {
+          if (res.data.closed || res.data.ineligible) closeOnly = true;
+          showMessage(res.data.error || 'Something went wrong. Please try again.');
+          isPlaying = false; updateButton(); return null;
+        }
+        data = res.data;
+      } catch (e) {
+        showMessage('Network error. Please check your connection and try again.');
+        isPlaying = false; updateButton(); return null;
+      }
+    }
+    hasPlayed = true;
+    return data;
+  }
+  // Called by the game once its reveal animation has finished.
+  function finish(data) {
+    isPlaying = false;
+    updateButton();
+    buzz(25);
+    showReward(data);
+  }
+
+  function showReward(data) {
+    trackEvent('Spin Wheel Result', { won: !!data.won, reward: data.won ? String(data.reward || '') : 'none', preview: !!data.preview });
+    recordWin(data);
+    const previewNote = data.preview ? ' (Preview only - no real voucher.)' : '';
+    $('status').classList.toggle('lose', !data.won);
+    $('rewardTitle').textContent = data.won ? 'Congratulations!' : 'Better luck next time';
+    $('wonLine').innerHTML = '';
+    if (data.won) {
+      $('wonLine').appendChild(document.createTextNode("You've won"));
+      const b = document.createElement('b'); b.textContent = String(data.reward || ''); $('wonLine').appendChild(b);
+    }
+    $('rewardSubtext').textContent = (data.won ? 'Use the code below to redeem your reward.' : 'No reward this time. Thanks for playing!') + previewNote;
+    $('receipt').hidden = !data.won;
+    $('rowReward').textContent = String(data.reward || '');
+    $('rowValue').textContent = String(data.voucherValue || '-');
+    $('rowExpiryWrap').hidden = !data.expiryDate;
+    $('rowExpiry').textContent = String(data.expiryDate || '');
+    $('rewardText').textContent = data.voucherCode || '';
+    rewardWrapper.classList.toggle('visible', !!data.won && !!data.voucherCode);
+    if (data.won) rewardBox.classList.add('pulsate-animation');
+    claimButton.textContent = data.won ? CONFIG.claimButton.text : 'Close';
+    claimButton.style.display = data.won && !CONFIG.claimButton.enabled ? 'none' : '';
+    const openUrl = data.won && CONFIG.claimButton.url;
+    claimButton.href = openUrl || CONFIG.closeUrl;
+    claimButton.onclick = () => {
+      if (data.won) trackEvent('Spin Wheel Claimed', { reward: String(data.reward || ''), preview: !!data.preview });
+      if (!openUrl) onCloseTap();
+    };
+    setTimeout(() => {
+      gameModal.classList.add('leaving');
+      setTimeout(() => {
+        gameModal.style.display = 'none';
+        rewardModal.style.display = 'flex';
+        if (data.won) {
+          sfx.win(); buzz([20, 40, 30]);
+          if (CONFIG.enableConfettiOnWin && !reducedMotion) setTimeout(fireConfetti, 350);
+        } else {
+          sfx.lose();
+          if (CONFIG.autoCloseNoWinSeconds > 0) autoCloseNoWin(CONFIG.autoCloseNoWinSeconds);
+        }
+      }, 280);
+    }, CONFIG.resultDelayMs || 600);
+  }
+  // No win: hide the Close button, count down, then close (the × stays as a backup).
+  function autoCloseNoWin(seconds) {
+    claimButton.style.display = 'none';
+    const bar = $('countdown');
+    bar.style.setProperty('--dur', seconds + 's');
+    bar.classList.add('run');
+    const sub = $('rewardSubtext'), base = sub.textContent;
+    const tick = () => {
+      if (seconds <= 0) return closePopup();
+      sub.textContent = base + ' Closing in ' + seconds + '...';
+      seconds--;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  // ---- copy ----
+  function copyCode() {
+    const text = $('rewardText').textContent;
+    if (!text) return;
+    const ok = () => {
+      copyInstructionEl.textContent = 'Code copied to clipboard';
+      copyInstructionEl.style.color = '#15803D';
+      $('copyLabel').textContent = 'Copied';
+      rewardBox.classList.add('copied');
+      sfx.copy(); buzz(15);
+      trackEvent('Spin Wheel Code Copied');
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok).catch(() => fallback(text, ok));
+    else fallback(text, ok);
+  }
+  function fallback(text, ok) {
+    const i = document.createElement('input');
+    i.value = text; i.style.position = 'absolute'; i.style.left = '-9999px';
+    document.body.appendChild(i); i.select(); document.execCommand('copy'); i.remove(); ok();
+  }
+  $('copyBtn').addEventListener('click', (e) => { e.stopPropagation(); copyCode(); });
+  rewardBox.addEventListener('click', copyCode);
+
+  // ---- confetti: one gentle fall in brand colours ----
+  function fireConfetti() {
+    const colors = [CONFIG.brand.primary, CONFIG.brand.dark, CONFIG.brand.accent, '#FFFFFF', '#D1D5DB'];
+    const c = document.createElement('canvas');
+    Object.assign(c.style, { position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 9999 });
+    document.body.appendChild(c);
+    const W = innerWidth, H = innerHeight, dpr = Math.min(2, window.devicePixelRatio || 1);
+    c.width = W * dpr; c.height = H * dpr;
+    const g = c.getContext('2d'); g.scale(dpr, dpr);
+    let ps = Array.from({ length: 90 }, () => ({
+      x: rnd(0, W), y: rnd(-H * .5, -10), vx: rnd(-.6, .6), vy: rnd(2.2, 3.8), w: rnd(5, 9), h: rnd(8, 13),
+      rot: rnd(0, TAU), vr: rnd(-.12, .12), tilt: rnd(0, TAU), vt: rnd(.05, .11), col: colors[Math.floor(Math.random() * colors.length)],
+    }));
+    (function frame() {
+      g.clearRect(0, 0, W, H);
+      ps = ps.filter((p) => p.y < H + 20);
+      ps.forEach((p) => {
+        p.tilt += p.vt; p.rot += p.vr; p.x += p.vx + Math.sin(p.tilt) * .9; p.y += p.vy;
+        g.save(); g.translate(p.x, p.y); g.rotate(p.rot); g.scale(1, Math.cos(p.tilt));
+        g.fillStyle = p.col; g.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        if (p.col === '#FFFFFF') { g.strokeStyle = 'rgba(0,0,0,.08)'; g.strokeRect(-p.w / 2, -p.h / 2, p.w, p.h); }
+        g.restore();
+      });
+      ps.length ? requestAnimationFrame(frame) : c.remove();
+    })();
+  }
+
+  // ---- the game ----
+  const ctx = {
+    config: CONFIG, $: $, rnd: rnd, reducedMotion: reducedMotion,
+    get rewards() { return uniqueRewards(); },
+    canPlay: canPlay, play: play, finish: finish,
+    iconFor: iconFor, rewardFor: rewardFor, decoys: decoys,
+    buzz: buzz, sfx: sfx, track: trackEvent,
+    setHint: (t) => { hintEl.textContent = t || ''; },
+    refresh: () => updateButton(),
+    wait: (ms) => new Promise((r) => setTimeout(r, reducedMotion ? Math.min(ms, 300) : ms)),
+  };
+  const GAME = (function () {
+    let c, boxes = [], busy = false;
+    async function pick(i) {
+      if (busy || !c.canPlay()) return;
+      busy = true;
+      boxes.forEach((b) => (b.disabled = true));
+      const box = boxes[i];
+      box.classList.add('shake');
+      c.setHint('');
+      const data = await c.play();
+      if (!data) { box.classList.remove('shake'); boxes.forEach((b) => (b.disabled = false)); busy = false; c.setHint(c.config.hintText); return; }
+      await c.wait(600);
+      box.classList.remove('shake');
+      const r = c.rewardFor(data), prize = box.querySelector('.gprize');
+      prize.classList.toggle('lose', !data.won);
+      prize.querySelector('.pi').textContent = c.iconFor(r);
+      prize.querySelector('.pn').textContent = data.won ? r.name : 'No luck';
+      box.classList.add('open');
+      boxes.forEach((b) => { if (b !== box) b.classList.add('dim'); });
+      c.buzz(20);
+      c.setHint(data.won ? 'You unwrapped a reward!' : 'Not this time - thanks for playing!');
+      await c.wait(1400);
+      c.finish(data);
+    }
+    return {
+      init(ctx) {
+        c = ctx;
+        const wrap = c.$('boxes');
+        for (let i = 0; i < 3; i++) {
+          const b = document.createElement('button');
+          b.className = 'gbox'; b.style.setProperty('--i', i); b.setAttribute('aria-label', 'Gift box ' + (i + 1));
+          b.innerHTML = '<div class="gift"><div class="gbody"></div><div class="lid"></div><div class="bow"></div></div>' +
+            '<div class="gprize"><span class="pi"></span><span class="pn"></span></div>';
+          b.addEventListener('click', () => pick(i));
+          wrap.appendChild(b); boxes.push(b);
+        }
+      },
+      onButton() { pick(Math.floor(Math.random() * boxes.length)); },
+    };
+  })();
+
+  actionBtn.addEventListener('click', () => {
+    if (closeOnly) return closePopup();
+    if ((canPlay() || gameButtonActive()) && GAME.onButton) GAME.onButton();
+  });
+
+  // ---- init: default rewards at once, then the admin-configured rewards ----
+  function setRewards(list) {
+    rewards = list.slice();
+    if (GAME.onRewards) GAME.onRewards(uniqueRewards());
+  }
+  function loadRewards() {
+    return new Promise((resolve) => {
+      (function attempt(n) {
+        fetchJson(CONFIG.apiBase + '/api/rewards')
+          .then((res) => {
+            const list = Array.isArray(res.data) ? res.data.filter((s) => s && s.name) : [];
+            if (!res.ok || !list.length) throw new Error('no rewards');
+            setRewards(list);
+            liveRewards = true;
+            updateButton();
+            resolve();
+          })
+          .catch(() => {
+            if (n < CONFIG.rewardsLoadAttempts) setTimeout(() => attempt(n + 1), 1500 * n);
+            else resolve();
+          });
+      })(1);
+    });
+  }
+
+  GAME.init(ctx);
+  setRewards((CONFIG.defaultSegments || []).filter((s) => s && s.name));
+  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text + (previewMode ? ' (Preview mode)' : ''));
+  else showMessage('Please open this page from the app to play.');
+  updateButton();
+  ctx.setHint(CONFIG.hintText || '');
+  trackEvent('Spin Wheel Viewed', { preview: previewMode });
+  const rewardsReady = loadRewards();
+  // Status gate (the page stays hidden until this answers, at most 4 s - see the top of the file):
+  // paused / outside the schedule -> close without showing anything;
+  // already won / out of plays -> show why, and the button just closes.
+  const reveal = () => document.documentElement.classList.remove('stw-gate');
+  if (identity && !previewMode) {
+    fetchJson(CONFIG.apiBase + '/api/status?identity=' + encodeURIComponent(identity)).then((res) => {
+      const st = res.ok && res.data ? res.data : {};
+      if (isPlaying || hasPlayed) return reveal();
+      if (st.open === false) {
+        trackEvent('Spin Wheel Not Shown', { reason: st.paused ? 'paused' : 'schedule' });
+        return closePopup();
+      }
+      if (st.eligible === false) {
+        trackEvent('Spin Wheel Not Eligible', { reason: String(st.reason || '') });
+        closeOnly = true;
+        showMessage(st.message || "You can't play right now.");
+        ctx.setHint('');
+        updateButton();
+      }
+      reveal();
+    }).catch(reveal); // server unreachable: show the game; the play itself is still checked
+  } else reveal();
+})();
+</script>
+</body>
+</html>
