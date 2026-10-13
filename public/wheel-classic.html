@@ -24,6 +24,9 @@
     // The customer's CleverTap Identity (their mobile number). Put the Identity value between the quotes.
     // If left empty or still an unreplaced placeholder, the page falls back to ?identity= in the URL.
     identity: "{{Profile.Identity | default: '#'}}",
+    // Signed token for this customer: CleverTap profile property stw_token, issued by Dialog's backend.
+    // The server uses it to check the request really is for this customer. Falls back to ?token= in the URL.
+    token: "{{Profile.stw_token | default: '#'}}",
     // Wrap words in <span class='hl'>...</span> to give them the gold highlight.
     mainTitle: { text: "🎉 Spin the Wheel <br><span class='hl'>& Win Big!</span>", fontSize: "26px", color: "#ffffff" },
     subtitle: { text: "Your chance to score discounts, free gifts, and exclusive perks is just a spin away.", fontSize: "14px", color: "#F3E8FF" },
@@ -375,6 +378,8 @@
   const cfgIdentity = String(CONFIG.identity || '').trim();
   const params = new URLSearchParams(location.search);
   const identity = (cfgIdentity && !/[{}#]/.test(cfgIdentity) ? cfgIdentity : params.get('identity') || params.get('mobile') || '').trim();
+  const cfgToken = String(CONFIG.token || '').trim();
+  const token = (cfgToken && !/[{}#]/.test(cfgToken) ? cfgToken : params.get('token') || '').trim();
   const previewMode = !identity && !inApp && CONFIG.previewModeOutsideApp;
 
   // ---- apply config ----
@@ -623,7 +628,7 @@
         // The server decides the result (voucher allocation, caps, 30-day rule); the wheel just animates to it.
         // Wait for the live rewards too, so segmentIndex matches the wheel being shown.
         const both = await Promise.all([fetchJson(CONFIG.apiBase + '/api/spin', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: identity }),
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: identity, token: token }),
         }), rewardsReady]);
         const res = both[0];
         if (!res.ok) {
@@ -835,7 +840,7 @@
   // already won / out of spins -> show why, and the button just closes.
   const reveal = () => document.documentElement.classList.remove('stw-gate');
   if (identity && !previewMode) {
-    fetchJson(CONFIG.apiBase + '/api/status?identity=' + encodeURIComponent(identity)).then((res) => {
+    fetchJson(CONFIG.apiBase + '/api/status?identity=' + encodeURIComponent(identity) + '&token=' + encodeURIComponent(token)).then((res) => {
       const st = res.ok && res.data ? res.data : {};
       if (isSpinning || hasSpun) return reveal();
       if (st.open === false) {

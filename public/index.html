@@ -118,6 +118,7 @@
   const cfgIdentity = String(CONFIG.identity || '').trim();
   const params = new URLSearchParams(location.search);
   const identity = (cfgIdentity && !/[{}#]/.test(cfgIdentity) ? cfgIdentity : params.get('identity') || params.get('mobile') || '').trim();
+  const token = (params.get('token') || '').trim(); // signed customer token (admin "Copy test link")
 
   // ---- apply config ----
   spinModal.style.background = CONFIG.background;
@@ -202,7 +203,7 @@
     try {
       // The server decides the result (voucher allocation, caps, 30-day rule); the wheel just animates to it.
       const resp = await fetch(CONFIG.apiBase + '/api/spin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity, token }),
       });
       data = await resp.json().catch(() => ({}));
       if (!resp.ok) { showMessage(data.error || 'Something went wrong.'); isSpinning = false; spinButton.disabled = false; return; }

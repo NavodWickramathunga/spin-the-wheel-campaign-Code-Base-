@@ -7,7 +7,7 @@ repeat-winner cooldown are all decided server-side.
 
 - Project: `stw-spin-wheel-1443` (region `asia-southeast1`)
 - Admin controller: https://stw-spin-wheel-1443.web.app/admin.html
-  (username/password are `ADMIN_USER` / `ADMIN_PASS` in `functions/.env` - never commit or share that file)
+  (username is `ADMIN_USER` in `functions/.env`; the password is the `ADMIN_PASS` secret - see Security & privacy)
 - Customer API: `https://stw-spin-wheel-1443.web.app/api/rewards`, `/api/spin`
 - Data: Firestore (direct client access is denied by `firestore.rules`; everything goes through the `api` function)
 
@@ -22,11 +22,13 @@ Paste one of the `clevertap-custom-html*.html` files into a CleverTap Custom HTM
 Settings live in the `CONFIG` block at the top of each file:
 
 - `identity` uses `{{Profile.Identity}}` - the customer's mobile number from CleverTap.
+- `token` uses `{{Profile.stw_token}}` - the customer's signed token (see Security & privacy).
 - `defaultSegments` should match the admin "Wheel segments" so the first frame matches the live wheel.
 - Outside the app (dashboard preview, desktop browser) the wheel runs a local preview spin; no voucher is issued.
 
 Browser test page: `https://stw-spin-wheel-1443.web.app/?identity=TEST0001`
-(each test identity can win once per cooldown period).
+(each test identity can win once per cooldown period). With `TOKEN_MODE=enforce` the link also needs
+`&token=...` - use **Copy test link** in the admin Customer lookup.
 
 Before showing the wheel the popup asks the server (`/api/status`) whether this customer can play:
 - wheel paused or outside the campaign schedule -> the popup closes itself without being seen;
@@ -71,13 +73,53 @@ one is picked, so nothing pretends the customer "just missed" a prize.
 - **Prizes & vouchers:** segment weights with live win-chance %, per-reward daily limits, active switches,
   drag-and-drop voucher CSV upload, stock table.
 - **Rules & schedule:** campaign schedule, winner caps, cooldown, plays per customer, low-stock %.
-- **Customer lookup:** a customer's wins and codes, whether they can play; "Let them play again".
-- **Winners & reports:** filterable table, day / all-time CSV.
+- **Customer lookup:** a customer's wins and codes, whether they can play; "Let them play again"; "Copy test link".
+- **Winners & reports:** filterable table, day / all-time CSV (mobile numbers are masked, e.g. `*******4567`).
 - **Team & access** (admins): own login per person; *Viewer* = read-only (managers), *Admin* = full control.
 - **Activity log:** who changed what.
 
 Save buttons only enable when something changed (invalid values are highlighted); risky actions ask
 for confirmation. Viewers see everything with all editing controls hidden.
+
+## Security & privacy
+
+**Customer token.** The server only trusts an identity that comes with its signed token:
+`token = base64url(HMAC-SHA256(STW_TOKEN_SECRET, TOKEN_CAMPAIGN + ":" + identity))` (identity without spaces/dashes).
+Dialog's backend computes it and stores it on each CleverTap profile as `stw_token`, or for a fixed list run
+`node tools/make-tokens.js identities.csv tokens.csv` (with `$env:STW_TOKEN_SECRET` set) and upload the CSV to CleverTap.
+Changing `TOKEN_CAMPAIGN` invalidates every issued token. `TOKEN_MODE` in `functions/.env`:
+- `off` (default) - not checked. The popup never says *why* a customer can't play (no "already won" leak).
+- `log` - checked and failures logged (`stw: missing/invalid customer token` in the function logs), nothing blocked.
+- `enforce` - spins and status without a valid token are refused. Turn on once the logs show tokens arriving.
+
+**Mobile numbers are not stored.** Customers are keyed by `HMAC(STW_PII_KEY, identity)`; reports show a masked
+number. Admin lookup still works by typing the number. Data written before this change: run once, signed in to the
+admin page, in the browser console: `fetch('/api/admin/migrate-pii', {method:'POST', headers:{'X-STW-Admin':'1'}}).then(r => r.json()).then(console.log)`.
+
+**Retention.** Wins are deleted `RETENTION_DAYS` (default 90) after the win; winner records after that or the
+cooldown, whichever is longer; spin counters after 14 days; the audit log after 365 days. Enable the TTL policies once:
+
+    for c in wins winners spinners audit login_fails; do
+      gcloud firestore fields ttls update expire_at --collection-group=$c --enable-ttl --project=<project-id>
+    done
+
+**Secrets** are in Google Secret Manager, not `.env` (`STW_PII_KEY` must never change once data exists - it would
+orphan every customer record):
+
+    firebase functions:secrets:set ADMIN_PASS
+    firebase functions:secrets:set STW_TOKEN_SECRET
+    firebase functions:secrets:set STW_PII_KEY
+
+Generate the two keys with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`.
+`functions/.env` keeps only non-secret settings (`ADMIN_USER`, `TZ_OFFSET_MIN`, `TOKEN_MODE`, `TOKEN_CAMPAIGN`,
+`RETENTION_DAYS`, `CORS_ORIGIN`) and must not also contain `ADMIN_PASS`.
+
+**Admin sign-in.** 5 wrong passwords within 15 minutes lock that username for 15 minutes. Use a non-obvious
+`ADMIN_USER` (anyone who knows it can trigger the lock). Changes are refused unless sent by the console itself.
+
+**CORS.** `CORS_ORIGIN` is `*` by default. To restrict it, check the logs for the origin the app's webview sends
+(blocked origins are logged as `stw: CORS origin not allowed`; webviews often send `null`) and set e.g.
+`CORS_ORIGIN=null`. The admin API never allows other origins.
 
 ## Pre-demo checklist
 

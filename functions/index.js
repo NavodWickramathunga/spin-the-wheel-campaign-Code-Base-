@@ -1,28 +1,40 @@
 const express = require('express');
 const crypto = require('crypto');
 const { onRequest } = require('firebase-functions/v2/https');
+const { defineSecret } = require('firebase-functions/params');
 const admin = require('firebase-admin');
 
 admin.initializeApp();
-const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 const db = getFirestore();
 
-// Collections:
+// Collections. Customers are never stored by mobile number: {pid} = HMAC(STW_PII_KEY, identity).
+// Docs with expire_at are deleted by Firestore TTL policies (see README).
 //   settings/main            caps, cooldown, spin limits, schedule, paused, low_stock_pct
 //   rewards/{id}             name, weight, active, is_no_win, daily_limit, created_at, available, allocated, expired
-//   vouchers/{code}          code, reward_name, reward_type, voucher_value, expiry_date, status, allocated_to, allocated_at
-//   winners/{identity}       last_win_at   (one doc per customer -> enforces the cooldown)
-//   spinners/{identity}      day, day_count, week, week_count   (per-customer spin limits)
-//   wins/{auto}              one row per win (the report)
+//   vouchers/{code}          code, reward_name, reward_type, voucher_value, expiry_date, status, allocated_to (pid), allocated_at
+//   winners/{pid}            last_win_at, expire_at   (one doc per customer -> enforces the cooldown)
+//   spinners/{pid}           day, day_count, week, week_count, expire_at   (per-customer spin limits)
+//   wins/{auto}              one row per win (the report): mobile_hash (pid), mobile_masked, ..., expire_at
 //   stats/day_{date}         wins, reward_wins{rewardId: n}   (read inside the spin transaction for caps)
 //   stats/week_{date}        wins
 //   stats/act_{date}         spins, hours{HH: n}   (analytics only, never read during a spin)
 //   stats/total              spins
+//   campaigns/{id}           name, template, html, version, published_at/by, previous {html, version, published_at}   (Studio "Publish"; served to the CleverTap loader)
 //   admins/{username}        salt, hash, role (admin | viewer), created_at, created_by
-//   audit/{auto}             at, user, action, details
+//   login_fails/{sha(user)}  count, first_at, locked_until, expire_at   (admin sign-in lockout)
+//   audit/{auto}             at, user, action, details, expire_at
+// Secrets live in Google Secret Manager: firebase functions:secrets:set <NAME>
+const ADMIN_PASS = defineSecret('ADMIN_PASS');
+const TOKEN_SECRET = defineSecret('STW_TOKEN_SECRET'); // shared with Dialog's backend, which issues the customer tokens
+const PII_KEY = defineSecret('STW_PII_KEY'); // ours only: turns mobile numbers into pids
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || '';
 const TZ_OFFSET_MIN = Number(process.env.TZ_OFFSET_MIN || 330); // Sri Lanka = UTC+5:30
+// off: the token is not checked (rollout); log: checked and failures logged, nothing blocked; enforce: required.
+const TOKEN_MODE = ['off', 'log', 'enforce'].includes(process.env.TOKEN_MODE) ? process.env.TOKEN_MODE : 'off';
+const TOKEN_CAMPAIGN = process.env.TOKEN_CAMPAIGN || 'stw'; // changing it invalidates every issued token
+const RETENTION_DAYS = Number(process.env.RETENTION_DAYS || 90); // wins (and winner records) are deleted after this
+const AUDIT_RETENTION_DAYS = 365;
 const DAY_MS = 86400000;
 const MIN_SPIN_GAP_MS = 10000; // per customer; see /api/spin
 // schedule: when the wheel can be spun, in local (Sri Lanka) time. days: 0 = Sun ... 6 = Sat.
@@ -37,14 +49,18 @@ const NUMBER_SETTINGS = { daily_cap: null, weekly_cap: null, cooldown_days: null
 
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => { res.set('X-Content-Type-Options', 'nosniff'); next(); });
 
 // Public customer endpoints are called from the app (CleverTap custom HTML), a different origin.
-app.use(['/api/rewards', '/api/spin', '/api/status'], (req, res, next) => {
-  res.set({
-    'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  });
+// CORS_ORIGIN: "*" (default) or a comma-separated allow-list, e.g. "null,https://example.com"
+// (an in-app webview often sends Origin "null"; blocked origins are logged so the right value can be found).
+const CORS_ORIGINS = String(process.env.CORS_ORIGIN || '*').split(',').map((s) => s.trim()).filter(Boolean);
+app.use(['/api/rewards', '/api/spin', '/api/status', '/api/campaign'], (req, res, next) => {
+  const origin = req.get('origin');
+  if (CORS_ORIGINS.includes('*')) res.set('Access-Control-Allow-Origin', '*');
+  else if (origin && CORS_ORIGINS.includes(origin)) res.set({ 'Access-Control-Allow-Origin': origin, Vary: 'Origin' });
+  else if (origin) console.warn('stw: CORS origin not allowed:', origin);
+  res.set({ 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -139,6 +155,36 @@ function customerGate(s, now, winner, spinner) {
 }
 
 const enc = encodeURIComponent;
+
+// ---------- customer verification & PII ----------
+const hmac = (key, s) => crypto.createHmac('sha256', key).update(s).digest();
+// Dialog's backend gives each customer token = base64url(HMAC-SHA256(STW_TOKEN_SECRET, "<TOKEN_CAMPAIGN>:<identity>"))
+// on their CleverTap profile (property stw_token); the popup sends it with the identity. See tools/make-tokens.js.
+const tokenFor = (identity) => hmac(TOKEN_SECRET.value(), `${TOKEN_CAMPAIGN}:${identity}`).toString('base64url');
+function verifyToken(identity, token) {
+  const ok = !!TOKEN_SECRET.value() && !!token && safeEq(String(token), tokenFor(identity));
+  if (!ok && TOKEN_MODE !== 'off') console.warn(`stw: ${token ? 'invalid' : 'missing'} customer token`);
+  return ok;
+}
+// Can this request act for the identity it names?
+const tokenOk = (identity, token) => TOKEN_MODE !== 'enforce' || verifyToken(identity, token);
+// Without a valid token the reason a customer can't play (e.g. "already won") isn't revealed to the caller.
+const knownCustomer = (identity, token) => TOKEN_MODE !== 'off' && verifyToken(identity, token);
+const UNVERIFIED = { open: true, eligible: false, reason: 'unverified', message: 'Please open this from the MyDialog app to play.' };
+const VAGUE = { open: true, eligible: false, reason: 'unavailable', message: "You can't play right now. Please check back later." };
+const publicGate = (gate, known) => (gate.eligible === false && !known ? VAGUE : gate);
+
+const pid = (identity) => {
+  const key = PII_KEY.value();
+  if (!key) throw new Error('STW_PII_KEY is not set');
+  return hmac(key, identity).toString('hex');
+};
+const PID_RE = /^[0-9a-f]{64}$/;
+const mask = (identity) => '*'.repeat(Math.max(4, identity.length - 4)) + identity.slice(-4);
+const expireIn = (days, from = Date.now()) => Timestamp.fromMillis(from + days * DAY_MS);
+// Report rows without the internal fields.
+const winRow = ({ mobile_hash, expire_at, mobile, ...r }) => ({ ...r, mobile_masked: r.mobile_masked || (mobile ? mask(mobile) : '') });
+
 const bodyText = (req) =>
   typeof req.body === 'string' ? req.body : Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.rawBody ? req.rawBody.toString('utf8') : '';
 
@@ -215,16 +261,21 @@ app.get('/api/rewards', async (req, res) => {
 });
 
 // The popup asks this before showing the wheel: closed -> it closes silently; not eligible -> it explains why.
-// Never returns voucher codes, since the identity isn't verified.
+// Never returns voucher codes; says why a customer can't play only when their token is valid.
 app.get('/api/status', async (req, res) => {
   try {
-    const identity = normIdentity(req.query.identity);
+    const identity = normIdentity(req.query.identity), token = req.query.token;
     const now = new Date();
     if (!IDENTITY_RE.test(identity)) return res.json(customerGate(await getSettings(), now, null, null));
+    if (!tokenOk(identity, token)) {
+      const gate = customerGate(await getSettings(), now, null, null);
+      return res.json(gate.open ? UNVERIFIED : gate);
+    }
+    const id = pid(identity);
     const [s, w, sp] = await Promise.all([
-      getSettings(), db.collection('winners').doc(enc(identity)).get(), db.collection('spinners').doc(enc(identity)).get(),
+      getSettings(), db.collection('winners').doc(id).get(), db.collection('spinners').doc(id).get(),
     ]);
-    res.json(customerGate(s, now, w.data(), sp.data()));
+    res.json(publicGate(customerGate(s, now, w.data(), sp.data()), knownCustomer(identity, token)));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Something went wrong.' });
@@ -237,12 +288,15 @@ app.post('/api/spin', async (req, res) => {
   if (!IDENTITY_RE.test(identity)) {
     return res.status(400).json({ error: 'Invalid identity. Please open this page from the MyDialog app.' });
   }
+  if (!tokenOk(identity, req.body?.token)) return res.status(401).json({ error: UNVERIFIED.message, ineligible: true });
+  const known = knownCustomer(identity, req.body?.token);
   try {
     await ensureSeed();
     const now = new Date();
     const nowIso = now.toISOString();
-    const winnerRef = db.collection('winners').doc(enc(identity));
-    const spinnerRef = db.collection('spinners').doc(enc(identity));
+    const id = pid(identity);
+    const winnerRef = db.collection('winners').doc(id);
+    const spinnerRef = db.collection('spinners').doc(id);
     const dayRef = db.collection('stats').doc('day_' + dayKey(now));
     const weekRef = db.collection('stats').doc('week_' + weekKey(now));
 
@@ -254,7 +308,7 @@ app.post('/api/spin', async (req, res) => {
       const s = settingsOf(setSnap);
 
       // Pause, schedule, winner cooldown and per-customer spin limits.
-      const gate = customerGate(s, now, winnerSnap.data(), spinnerSnap.data());
+      const gate = publicGate(customerGate(s, now, winnerSnap.data(), spinnerSnap.data()), known);
       if (!gate.open) return { status: 403, body: { error: gate.message, closed: true } };
       if (!gate.eligible) return { status: 403, body: { error: gate.message, ineligible: true } };
       // A second spin this soon is a duplicate (two popups open, or a request sent twice), never a real player:
@@ -294,20 +348,21 @@ app.post('/api/spin', async (req, res) => {
       const v = voucher ? voucher.data() : null;
       expired.forEach((d) => t.update(d.ref, { status: 'expired' }));
       if (won) {
-        t.update(voucher.ref, { status: 'allocated', allocated_to: identity, allocated_at: nowIso });
+        t.update(voucher.ref, { status: 'allocated', allocated_to: id, allocated_at: nowIso });
         t.update(db.collection('rewards').doc(pick.id), {
           available: FieldValue.increment(-1 - expired.length), allocated: FieldValue.increment(1),
           ...(expired.length ? { expired: FieldValue.increment(expired.length) } : {}),
         });
-        t.set(winnerRef, { last_win_at: nowIso, last_voucher: v.code }, { merge: true });
+        // Kept at least as long as the cooldown, so a deleted record never lets someone win again early.
+        t.set(winnerRef, { last_win_at: nowIso, last_voucher: v.code, expire_at: expireIn(Math.max(s.cooldown_days, RETENTION_DAYS) + 1) }, { merge: true });
         t.set(db.collection('wins').doc(), {
-          created_at: nowIso, mobile: identity, reward_id: pick.id, reward_name: pick.name, reward_type: v.reward_type,
-          voucher_code: v.code, voucher_value: v.voucher_value || pick.name, expiry_date: v.expiry_date || '',
+          created_at: nowIso, mobile_hash: id, mobile_masked: mask(identity), reward_id: pick.id, reward_name: pick.name, reward_type: v.reward_type,
+          voucher_code: v.code, voucher_value: v.voucher_value || pick.name, expiry_date: v.expiry_date || '', expire_at: expireIn(RETENTION_DAYS),
         });
         t.set(dayRef, { wins: FieldValue.increment(1), reward_wins: { [pick.id]: FieldValue.increment(1) } }, { merge: true });
         t.set(weekRef, { wins: FieldValue.increment(1) }, { merge: true });
       }
-      t.set(spinnerRef, { day: u.today, day_count: u.usedDay + 1, week: u.week, week_count: u.usedWeek + 1, last_spin_at: nowIso });
+      t.set(spinnerRef, { day: u.today, day_count: u.usedDay + 1, week: u.week, week_count: u.usedWeek + 1, last_spin_at: nowIso, expire_at: expireIn(14) });
       const hour = String(localDate(now).getUTCHours()).padStart(2, '0');
       t.set(db.collection('stats').doc('act_' + u.today), { spins: FieldValue.increment(1), hours: { [hour]: FieldValue.increment(1) } }, { merge: true });
       t.set(db.collection('stats').doc('total'), { spins: FieldValue.increment(1) }, { merge: true });
@@ -342,7 +397,8 @@ function safeEq(a, b) {
 }
 const authCache = new Map(); // sha(credentials) -> { who, until }; short-lived so removed accounts stop working quickly
 async function checkLogin(user, pass) {
-  if (ADMIN_PASS && safeEq(`${user}:${pass}`, `${ADMIN_USER}:${ADMIN_PASS}`)) return { user, role: 'admin', owner: true };
+  const ownerPass = ADMIN_PASS.value();
+  if (ownerPass && safeEq(`${user}:${pass}`, `${ADMIN_USER}:${ownerPass}`)) return { user, role: 'admin', owner: true };
   const name = user.toLowerCase();
   if (!USERNAME_RE.test(name)) return null;
   const snap = await db.collection('admins').doc(name).get();
@@ -350,15 +406,37 @@ async function checkLogin(user, pass) {
   const a = snap.data();
   return safeEq(await scryptHex(pass, a.salt), a.hash) ? { user: name, role: a.role } : null;
 }
+// After MAX_LOGIN_FAILS wrong passwords within LOCK_MS the username is locked for LOCK_MS (shared by all instances).
+const MAX_LOGIN_FAILS = 5, LOCK_MS = 15 * 60000;
+async function noteLoginFail(ref, f) {
+  const now = Date.now(), fresh = !f || now - f.first_at > LOCK_MS;
+  const count = fresh ? 1 : f.count + 1;
+  await ref.set({ count, first_at: fresh ? now : f.first_at, locked_until: count >= MAX_LOGIN_FAILS ? now + LOCK_MS : 0, expire_at: expireIn(1) });
+  if (count >= MAX_LOGIN_FAILS) console.warn('stw: admin sign-in locked after repeated failures');
+}
 async function adminAuth(req, res, next) {
   try {
+    // Changes must come from the console's own scripts: a custom header can't be sent cross-site without
+    // CORS approval (which /api/admin never gives), so other sites can't use a signed-in browser.
+    if (req.method !== 'GET' && req.get('x-stw-admin') !== '1') return res.status(403).json({ error: 'Forbidden' });
+    res.set('Cache-Control', 'no-store');
     const [scheme, token] = (req.headers.authorization || '').split(' ');
     if (scheme === 'Basic' && token) {
       const key = sha(token), hit = authCache.get(key);
       let who = hit && hit.until > Date.now() ? hit.who : null;
       if (!who) {
         const raw = Buffer.from(token, 'base64').toString(), i = raw.indexOf(':');
-        who = i > 0 ? await checkLogin(raw.slice(0, i), raw.slice(i + 1)) : null;
+        if (i > 0) {
+          const user = raw.slice(0, i), failRef = db.collection('login_fails').doc(sha(user.toLowerCase()));
+          const f = (await failRef.get()).data();
+          if (f?.locked_until > Date.now()) {
+            const mins = Math.ceil((f.locked_until - Date.now()) / 60000);
+            return res.status(429).json({ error: `Too many wrong passwords. Sign-in is locked for ${mins} more minute${mins === 1 ? '' : 's'}.` });
+          }
+          who = await checkLogin(user, raw.slice(i + 1));
+          if (who && f) await failRef.delete();
+          if (!who) await noteLoginFail(failRef, f);
+        }
         if (who) authCache.set(key, { who, until: Date.now() + 60000 });
       }
       if (who) {
@@ -377,8 +455,56 @@ app.use('/api/admin', adminAuth);
 const adminOnly = (req, res, next) => (req.admin.role === 'admin' ? next() : res.status(403).json({ error: 'Admins only.' }));
 const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); res.status(500).json({ error: 'Server error' }); });
 const audit = (req, action, details) => db.collection('audit')
-  .add({ at: new Date().toISOString(), user: req.admin.user, action, details: details || {} })
+  .add({ at: new Date().toISOString(), user: req.admin.user, action, details: details || {}, expire_at: expireIn(AUDIT_RETENTION_DAYS) })
   .catch((e) => console.error('audit', e));
+
+// ---------- published campaigns ----------
+// Studio publishes the finished page here; the small loader pasted into CleverTap once fetches and renders it.
+const CAMPAIGN_ID = /^[a-z0-9][a-z0-9-]{2,39}$/;
+const MAX_CAMPAIGN_HTML = 400 * 1024;
+app.get('/api/campaign/:id', wrap(async (req, res) => {
+  const snap = CAMPAIGN_ID.test(req.params.id) ? await db.collection('campaigns').doc(req.params.id).get() : null;
+  res.set('Cache-Control', 'no-cache');
+  if (!snap || !snap.exists) return res.status(404).json({ error: 'Not found' });
+  const d = snap.data();
+  res.json({ html: d.html, version: d.version });
+}));
+const campaignInfo = (id, d) => ({ id, name: d.name, template: d.template, version: d.version, published_at: d.published_at, published_by: d.published_by, can_rollback: !!d.previous });
+app.get('/api/admin/campaigns', wrap(async (req, res) => {
+  const snap = await db.collection('campaigns').get();
+  res.json(snap.docs.map((x) => campaignInfo(x.id, x.data())).sort((a, b) => String(b.published_at).localeCompare(String(a.published_at))));
+}));
+app.put('/api/admin/campaigns/:id', wrap(async (req, res) => {
+  const id = req.params.id, { html, name, template } = req.body || {};
+  if (!CAMPAIGN_ID.test(id)) return res.status(400).json({ error: 'Campaign ID: 3-40 characters, lowercase letters, numbers and dashes.' });
+  if (typeof html !== 'string' || !html.includes('const CONFIG') || html.length > MAX_CAMPAIGN_HTML) return res.status(400).json({ error: 'That does not look like a valid template.' });
+  const ref = db.collection('campaigns').doc(id);
+  const out = await db.runTransaction(async (tx) => {
+    const old = (await tx.get(ref)).data();
+    const doc = {
+      name: String(name || id).slice(0, 80), template: String(template || '').slice(0, 60), html,
+      version: (old?.version || 0) + 1, published_at: new Date().toISOString(), published_by: req.admin.user,
+      previous: old ? { html: old.html, version: old.version, published_at: old.published_at } : null,
+    };
+    tx.set(ref, doc);
+    return doc;
+  });
+  audit(req, 'Published campaign', { id, version: out.version });
+  res.json(campaignInfo(id, out));
+}));
+app.post('/api/admin/campaigns/:id/rollback', wrap(async (req, res) => {
+  const ref = db.collection('campaigns').doc(req.params.id);
+  const out = await db.runTransaction(async (tx) => {
+    const old = (await tx.get(ref)).data();
+    if (!old?.previous) return null;
+    const doc = { ...old, html: old.previous.html, version: old.version + 1, published_at: new Date().toISOString(), published_by: req.admin.user, previous: null };
+    tx.set(ref, doc);
+    return doc;
+  });
+  if (!out) return res.status(400).json({ error: 'No earlier version to go back to.' });
+  audit(req, 'Rolled back campaign', { id: req.params.id, version: out.version });
+  res.json(campaignInfo(req.params.id, out));
+}));
 
 app.get('/api/admin/me', (req, res) => res.json({ user: req.admin.user, role: req.admin.role, owner: !!req.admin.owner }));
 
@@ -532,7 +658,7 @@ app.post('/api/admin/vouchers', wrap(async (req, res) => {
 async function winsBetween(from, to, limit) {
   let q = db.collection('wins').where('created_at', '>=', from).where('created_at', '<', to).orderBy('created_at', 'desc');
   if (limit) q = q.limit(limit);
-  return (await q.get()).docs.map((d) => d.data());
+  return (await q.get()).docs.map((d) => winRow(d.data()));
 }
 app.get('/api/admin/winners', wrap(async (req, res) => {
   res.json(await winsBetween('0000', '9999', 1000));
@@ -546,8 +672,8 @@ app.get('/api/admin/winners.csv', wrap(async (req, res) => {
     to = new Date(start + DAY_MS).toISOString();
   }
   const rows = (await winsBetween(from, to)).reverse();
-  const head = 'Date (Sri Lanka time),Identity (Mobile Number),Voucher Code,Voucher Value,Reward,Reward Type,Expiry Date';
-  const body = rows.map((r) => [localStamp(r.created_at), r.mobile, r.voucher_code, r.voucher_value || r.reward_name, r.reward_name, r.reward_type, r.expiry_date].map(csvEscape).join(','));
+  const head = 'Date (Sri Lanka time),Mobile (masked),Voucher Code,Voucher Value,Reward,Reward Type,Expiry Date';
+  const body = rows.map((r) => [localStamp(r.created_at), r.mobile_masked, r.voucher_code, r.voucher_value || r.reward_name, r.reward_name, r.reward_type, r.expiry_date].map(csvEscape).join(','));
   res.set({
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="winners-${req.query.date || dayKey(new Date())}.csv"`,
@@ -558,9 +684,10 @@ app.get('/api/admin/winners.csv', wrap(async (req, res) => {
 app.get('/api/admin/customer', wrap(async (req, res) => {
   const mobile = normIdentity(req.query.mobile);
   if (!IDENTITY_RE.test(mobile)) return res.status(400).json({ error: 'Enter a valid mobile number / identity' });
+  const id = pid(mobile);
   const [wins, w, sp, s] = await Promise.all([
-    db.collection('wins').where('mobile', '==', mobile).limit(100).get(),
-    db.collection('winners').doc(enc(mobile)).get(), db.collection('spinners').doc(enc(mobile)).get(), getSettings(),
+    db.collection('wins').where('mobile_hash', '==', id).limit(100).get(),
+    db.collection('winners').doc(id).get(), db.collection('spinners').doc(id).get(), getSettings(),
   ]);
   const now = new Date(), gate = customerGate({ ...s, paused: false, schedule: DEFAULT_SCHEDULE }, now, w.data(), sp.data());
   const u = spinUsage(sp.data(), now);
@@ -569,16 +696,70 @@ app.get('/api/admin/customer', wrap(async (req, res) => {
     canSpin: gate.eligible !== false,
     message: gate.eligible === false ? gate.message : 'Can spin now (when the wheel is open).',
     spinsToday: u.usedDay, spinsThisWeek: u.usedWeek,
-    wins: wins.docs.map((d) => d.data()).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
+    wins: wins.docs.map((d) => winRow(d.data())).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
   });
+}));
+// A browser test link that plays as this customer (adds their token). Admins only, logged.
+app.get('/api/admin/test-token', adminOnly, wrap(async (req, res) => {
+  const mobile = normIdentity(req.query.mobile);
+  if (!IDENTITY_RE.test(mobile)) return res.status(400).json({ error: 'Enter a valid mobile number / identity' });
+  if (!TOKEN_SECRET.value()) return res.status(400).json({ error: 'STW_TOKEN_SECRET is not set' });
+  audit(req, 'Created test link', { mobile: mask(mobile) });
+  res.json({ identity: mobile, token: tokenFor(mobile) });
 }));
 // Clears the cooldown and spin counters for one customer (e.g. testers during the demo).
 app.post('/api/admin/customer/reset', wrap(async (req, res) => {
   const mobile = normIdentity(req.body?.mobile);
   if (!IDENTITY_RE.test(mobile)) return res.status(400).json({ error: 'Enter a valid mobile number / identity' });
-  await Promise.all([db.collection('winners').doc(enc(mobile)).delete(), db.collection('spinners').doc(enc(mobile)).delete()]);
-  audit(req, 'Reset customer', { mobile });
+  const id = pid(mobile);
+  await Promise.all([db.collection('winners').doc(id).delete(), db.collection('spinners').doc(id).delete()]);
+  audit(req, 'Reset customer', { mobile: mask(mobile) });
   res.json({ ok: true });
+}));
+
+// One-off: converts data written before mobile numbers were hashed (doc IDs, wins.mobile, vouchers.allocated_to,
+// audit entries) and adds expire_at everywhere. Safe to run more than once.
+app.post('/api/admin/migrate-pii', adminOnly, wrap(async (req, res) => {
+  const w = db.bulkWriter(), n = { winners: 0, spinners: 0, wins: 0, vouchers: 0, audit: 0 };
+  const plain = (docId) => normIdentity(decodeURIComponent(docId));
+  const winnerDays = Math.max((await getSettings()).cooldown_days, RETENTION_DAYS) + 1;
+  for (const [col, days] of [['winners', null], ['spinners', 14]]) {
+    for (const d of (await db.collection(col).get()).docs) {
+      if (PID_RE.test(d.id)) continue;
+      const data = d.data(), target = db.collection(col).doc(pid(plain(d.id)));
+      // A record written after the switch is newer; keep it.
+      if (!(await target.get()).exists) {
+        const exp = days ? expireIn(days) : expireIn(winnerDays, Date.parse(data.last_win_at) || Date.now());
+        w.set(target, { ...data, expire_at: exp });
+      }
+      w.delete(d.ref); n[col]++;
+    }
+  }
+  for (const d of (await db.collection('wins').get()).docs) {
+    const r = d.data();
+    if (!r.mobile && r.expire_at) continue;
+    w.update(d.ref, {
+      ...(r.mobile ? { mobile_hash: pid(normIdentity(r.mobile)), mobile_masked: mask(normIdentity(r.mobile)), mobile: FieldValue.delete() } : {}),
+      expire_at: expireIn(RETENTION_DAYS, Date.parse(r.created_at) || Date.now()),
+    });
+    n.wins++;
+  }
+  for (const d of (await db.collection('vouchers').where('status', '==', 'allocated').get()).docs) {
+    const to = d.data().allocated_to;
+    if (to && !PID_RE.test(to)) { w.update(d.ref, { allocated_to: pid(normIdentity(to)) }); n.vouchers++; }
+  }
+  for (const d of (await db.collection('audit').get()).docs) {
+    const a = d.data(), m = a.details?.mobile, raw = !!m && !m.includes('*');
+    if (a.expire_at && !raw) continue;
+    w.update(d.ref, {
+      ...(raw ? { 'details.mobile': mask(normIdentity(m)) } : {}),
+      expire_at: expireIn(AUDIT_RETENTION_DAYS, Date.parse(a.at) || Date.now()),
+    });
+    n.audit++;
+  }
+  await w.close();
+  audit(req, 'Migrated customer data to hashed IDs', n);
+  res.json(n);
 }));
 
 // ---------- admin accounts & audit log ----------
@@ -612,7 +793,7 @@ app.delete('/api/admin/users/:username', adminOnly, wrap(async (req, res) => {
 }));
 app.get('/api/admin/audit', wrap(async (req, res) => {
   const snap = await db.collection('audit').orderBy('at', 'desc').limit(200).get();
-  res.json(snap.docs.map((d) => d.data()));
+  res.json(snap.docs.map((d) => { const { expire_at, ...a } = d.data(); return a; }));
 }));
 
-exports.api = onRequest({ region: 'asia-southeast1', maxInstances: 10, memory: '256MiB' }, app);
+exports.api = onRequest({ region: 'asia-southeast1', maxInstances: 10, memory: '256MiB', secrets: [ADMIN_PASS, TOKEN_SECRET, PII_KEY] }, app);

@@ -1,7 +1,8 @@
 // Spin the Wheel admin console (single page, hash-routed).
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const api = (url, opts) => fetch(url, opts).then(async (r) => {
+// X-STW-Admin marks requests from this console; the server refuses changes without it (blocks cross-site use).
+const api = (url, opts = {}) => fetch(url, { ...opts, headers: { 'X-STW-Admin': '1', ...opts.headers } }).then(async (r) => {
   const d = await r.json().catch(() => {
     throw new Error(`Server unavailable (HTTP ${r.status}). The backend function may be down - try again shortly.`);
   });
@@ -398,11 +399,18 @@ async function lookup() {
         <div style="flex:1;min-width:200px"><h3 class="mono">${esc(c.mobile)}</h3>
           <div class="muted">${c.canSpin ? '<span class="tag ok">Can play</span>' : '<span class="tag bad">Can\'t play now</span>'} ${esc(c.message)}</div>
           <div class="muted" style="margin-top:4px">Plays today: <b>${c.spinsToday}</b> · this week: <b>${c.spinsThisWeek}</b> · wins: <b>${c.wins.length}</b></div></div>
+        <button class="btn secondary admin-only" id="testLink">Copy test link</button>
         <button class="btn secondary admin-only" id="resetCustomer">Let them play again</button>
       </div>
       <div class="table-wrap"><table><tr><th>Date</th><th>Reward</th><th>Voucher code</th><th>Value</th><th>Expires</th></tr>${c.wins.length
         ? c.wins.map((w) => `<tr><td>${new Date(w.created_at).toLocaleString()}</td><td>${esc(w.reward_name)}</td><td class="mono"><b>${esc(w.voucher_code)}</b></td><td>${esc(w.voucher_value)}</td><td>${esc(w.expiry_date || '-')}</td></tr>`).join('')
         : '<tr><td colspan="5" class="empty">No wins yet.</td></tr>'}</table></div>`;
+    const tl = $('testLink');
+    if (tl) tl.onclick = () => busy(tl, () => api('/api/admin/test-token?mobile=' + encodeURIComponent(c.mobile))).then(async (t) => {
+      const url = location.origin + '/?identity=' + encodeURIComponent(t.identity) + '&token=' + encodeURIComponent(t.token);
+      await navigator.clipboard.writeText(url);
+      toast('Test link copied - it plays as this customer', 'ok');
+    }).catch(fail);
     const btn = $('resetCustomer');
     if (btn) btn.onclick = async () => {
       if (!(await confirmBox({ title: `Let ${c.mobile} play again?`, body: 'This clears their winner cooldown and play count. Their past wins stay in the reports.', ok: 'Reset' }))) return;
@@ -416,10 +424,10 @@ $('lookupMobile').addEventListener('keydown', (e) => { if (e.key === 'Enter') lo
 // ---------- winners ----------
 function renderWinners() {
   const q = $('winnerFilter').value.trim().toLowerCase();
-  const list = q ? winners.filter((w) => [w.mobile, w.voucher_code, w.reward_name].some((v) => String(v || '').toLowerCase().includes(q))) : winners;
+  const list = q ? winners.filter((w) => [w.mobile_masked, w.voucher_code, w.reward_name].some((v) => String(v || '').toLowerCase().includes(q))) : winners;
   $('winnersCount').textContent = q ? `${fmtNum(list.length)} of ${fmtNum(winners.length)} winners match.` : `Latest ${fmtNum(winners.length)} winners.`;
   $('winners').innerHTML = '<tr><th>Date</th><th>Mobile</th><th>Voucher code</th><th>Value</th><th>Reward</th><th>Expires</th></tr>' + (list.length
-    ? list.slice(0, 500).map((w) => `<tr><td>${new Date(w.created_at).toLocaleString()}</td><td class="mono">${esc(w.mobile)}</td><td class="mono">${esc(w.voucher_code)}</td><td>${esc(w.voucher_value || w.reward_name)}</td><td>${esc(w.reward_name)}</td><td>${esc(w.expiry_date || '-')}</td></tr>`).join('')
+    ? list.slice(0, 500).map((w) => `<tr><td>${new Date(w.created_at).toLocaleString()}</td><td class="mono">${esc(w.mobile_masked)}</td><td class="mono">${esc(w.voucher_code)}</td><td>${esc(w.voucher_value || w.reward_name)}</td><td>${esc(w.reward_name)}</td><td>${esc(w.expiry_date || '-')}</td></tr>`).join('')
     : `<tr><td colspan="6" class="empty">${q ? 'No winners match your filter.' : 'No winners yet.'}</td></tr>`);
 }
 $('winnerFilter').addEventListener('input', renderWinners);

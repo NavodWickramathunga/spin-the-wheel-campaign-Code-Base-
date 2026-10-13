@@ -87,8 +87,18 @@
     </section>
 
     <section>
-      <h2>5. Get the template</h2>
-      <p class="hint">Paste it into the CleverTap campaign's <b>Custom HTML</b>. The backend address and the CleverTap Identity are filled in automatically.</p>
+      <h2>5. Publish to CleverTap</h2>
+      <p class="hint"><b>One-time setup:</b> give the campaign an ID, press <b>Publish</b>, then <b>Copy loader</b> and paste it into the CleverTap campaign's <b>Custom HTML</b> once. After that, every Publish updates the live campaign - no more pasting.</p>
+      <label class="field"><span>Campaign ID (lowercase letters, numbers, dashes)</span><input type="text" id="campId" maxlength="40" placeholder="e.g. spin-oct-2026"></label>
+      <div class="row">
+        <button class="btn" id="publish">Publish</button>
+        <button class="btn secondary" id="copyLoader">Copy loader</button>
+        <button class="btn secondary" id="rollback" hidden>Roll back</button>
+        <span class="ok" id="pubMsg"></span>
+      </div>
+      <p class="hint" id="pubInfo" style="margin-top:8px"></p>
+      <h2 style="margin-top:14px">Or paste the full template (old way)</h2>
+      <p class="hint">Needs re-pasting into CleverTap after every change.</p>
       <div class="row">
         <button class="btn" id="copyHtml">Copy HTML</button>
         <button class="btn secondary" id="download">Download .html</button>
@@ -189,10 +199,13 @@ function parseConfig(src) {
   const r = configRange(src);
   return new Function('return (' + src.slice(r.start + 'const CONFIG = '.length, r.stop - 1) + ')')();
 }
-function generate() {
+const CT_IDENTITY = "{{Profile.Identity | default: '#'}}", CT_TOKEN = "{{Profile.stw_token | default: '#'}}";
+// published = true: the page is stored on the server, so CleverTap cannot fill in the customer; the loader swaps these markers.
+function generate(published) {
   const cfg = clone(current.config);
   cfg.apiBase = location.origin; // always this backend
-  if ('identity' in cfg) cfg.identity = "{{Profile.Identity | default: '#'}}"; // CleverTap fills in the customer's number
+  if ('identity' in cfg) cfg.identity = published ? '__STW_IDENTITY__' : CT_IDENTITY; // CleverTap fills in the customer's number
+  if ('token' in cfg) cfg.token = published ? '__STW_TOKEN__' : CT_TOKEN; // and their signed token
   const r = configRange(current.source);
   const body = JSON.stringify(cfg, null, 2).replace(/\n/g, '\n  ');
   return current.source.slice(0, r.start) +
@@ -280,6 +293,71 @@ $('download').onclick = () => {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
+// ---------- publish: the loader is pasted into CleverTap once, Publish updates it ----------
+const ID_OK = /^[a-z0-9][a-z0-9-]{2,39}$/;
+const campApi = (url, opts = {}) => fetch(url, { ...opts, headers: { 'X-STW-Admin': '1', 'Content-Type': 'application/json', ...opts.headers } }).then(async (r) => {
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Request failed (' + r.status + ')');
+  return j;
+});
+const pubFlash = (t) => { $('pubMsg').textContent = t; setTimeout(() => ($('pubMsg').textContent = ''), 5000); };
+const campId = () => $('campId').value.trim().toLowerCase();
+function showCampaign(c) {
+  $('pubInfo').textContent = c ? `Live: version ${c.version}, ${c.template || 'template'}, published ${new Date(c.published_at).toLocaleString()} by ${c.published_by}.` : 'Not published yet.';
+  $('rollback').hidden = !(c && c.can_rollback);
+}
+async function lookupCampaign() {
+  const id = campId();
+  if (!ID_OK.test(id)) { showCampaign(null); $('pubInfo').textContent = ''; return; }
+  try { showCampaign((await campApi('/api/admin/campaigns')).find((c) => c.id === id)); } catch (e) { $('pubInfo').textContent = ''; }
+}
+$('campId').addEventListener('change', () => { try { localStorage.setItem('studio.campaign', campId()); } catch (e) { /* storage unavailable */ } lookupCampaign(); });
+$('publish').onclick = async () => {
+  const id = campId();
+  if (!ID_OK.test(id)) return pubFlash('Enter a campaign ID first (3-40 letters, numbers, dashes).');
+  if (!confirm(`Publish to "${id}"? Every customer who opens this campaign will see the new version straight away.`)) return;
+  try {
+    const c = await campApi('/api/admin/campaigns/' + id, { method: 'PUT', body: JSON.stringify({ html: generate(true), name: id, template: current.tpl.name }) });
+    showCampaign(c); pubFlash('Published - version ' + c.version + '.');
+  } catch (e) { pubFlash(e.message); }
+};
+$('rollback').onclick = async () => {
+  const id = campId();
+  if (!confirm('Go back to the previous published version of "' + id + '"?')) return;
+  try { const c = await campApi('/api/admin/campaigns/' + id + '/rollback', { method: 'POST', body: '{}' }); showCampaign(c); pubFlash('Rolled back - now version ' + c.version + '.'); }
+  catch (e) { pubFlash(e.message); }
+};
+function loaderHtml(id) {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;background:transparent">
+<script>
+// STW loader: fetches the published campaign "${id}" and shows it. Design changes are made in the admin Studio - no need to edit this.
+(function () {
+  var BASE = ${JSON.stringify(location.origin)}, ID = ${JSON.stringify(id)};
+  var IDENT = "{{Profile.Identity | default: '#'}}", TOKEN = "{{Profile.stw_token | default: '#'}}";
+  function esc(v) { return JSON.stringify(String(v)).slice(1, -1); }
+  function close() { var a = document.createElement('a'); a.href = 'wzrk://close'; document.body.appendChild(a); a.click(); }
+  fetch(BASE + '/api/campaign/' + ID, { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (d) {
+      var html = d.html.split('__STW_IDENTITY__').join(esc(IDENT)).split('__STW_TOKEN__').join(esc(TOKEN));
+      document.open(); document.write(html); document.close();
+    })
+    .catch(function () { close(); });
+})();
+<\/script>
+</body></html>`;
+}
+$('copyLoader').onclick = async () => {
+  const id = campId();
+  if (!ID_OK.test(id)) return pubFlash('Enter a campaign ID first.');
+  const html = loaderHtml(id);
+  try { await navigator.clipboard.writeText(html); pubFlash('Loader copied - paste it into CleverTap Custom HTML (once).'); }
+  catch (e) { const t = document.createElement('textarea'); t.value = html; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); pubFlash('Loader copied.'); }
+};
+try { $('campId').value = localStorage.getItem('studio.campaign') || ''; } catch (e) { /* storage unavailable */ }
+lookupCampaign();
 $('reset').onclick = () => { current.config = clone(current.defaults); renderFields(); renderSegments(); refreshPreview(); };
 
 // ?embed=1 = shown inside the admin console; ?t=<file> = open that template.
