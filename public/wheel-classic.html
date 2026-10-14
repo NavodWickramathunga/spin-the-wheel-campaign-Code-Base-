@@ -829,7 +829,7 @@
   setSegments((CONFIG.defaultSegments || []).filter((s) => s && s.name));
   if (window.ResizeObserver) new ResizeObserver(() => { setupCanvas(); drawWheel(); }).observe(wheelContainer);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawWheel); // redraw labels once Poppins loads
-  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text + (previewMode ? ' (Preview mode)' : ''));
+  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text);
   else showMessage('Please open this page from the MyDialog app to spin the wheel.');
   updateSpinButton();
   trackEvent('Spin Wheel Viewed', { preview: previewMode });

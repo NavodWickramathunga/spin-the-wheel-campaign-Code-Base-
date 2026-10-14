@@ -90,6 +90,7 @@
       <h2>5. Publish to CleverTap</h2>
       <p class="hint"><b>One-time setup:</b> give the campaign an ID, press <b>Publish</b>, then <b>Copy loader</b> and paste it into the CleverTap campaign's <b>Custom HTML</b> once. After that, every Publish updates the live campaign - no more pasting.</p>
       <label class="field"><span>Campaign ID (lowercase letters, numbers, dashes)</span><input type="text" id="campId" maxlength="40" placeholder="e.g. spin-oct-2026"></label>
+      <label class="field"><span>Campaign name (optional - shown in the admin Campaigns page)</span><input type="text" id="campName" maxlength="80" placeholder="e.g. October salary-day spin"></label>
       <div class="row">
         <button class="btn" id="publish">Publish</button>
         <button class="btn secondary" id="copyLoader">Copy loader</button>
@@ -303,8 +304,9 @@ const campApi = (url, opts = {}) => fetch(url, { ...opts, headers: { 'X-STW-Admi
 const pubFlash = (t) => { $('pubMsg').textContent = t; setTimeout(() => ($('pubMsg').textContent = ''), 5000); };
 const campId = () => $('campId').value.trim().toLowerCase();
 function showCampaign(c) {
-  $('pubInfo').textContent = c ? `Live: version ${c.version}, ${c.template || 'template'}, published ${new Date(c.published_at).toLocaleString()} by ${c.published_by}.` : 'Not published yet.';
+  $('pubInfo').textContent = c ? `Live: version ${c.version}, ${c.template || 'template'}, published ${new Date(c.published_at).toLocaleString()} by ${c.published_by}. Full history: admin > Campaigns.` : 'Not published yet.';
   $('rollback').hidden = !(c && c.can_rollback);
+  if (c && c.name && c.name !== c.id) $('campName').value = c.name;
 }
 async function lookupCampaign() {
   const id = campId();
@@ -315,9 +317,11 @@ $('campId').addEventListener('change', () => { try { localStorage.setItem('studi
 $('publish').onclick = async () => {
   const id = campId();
   if (!ID_OK.test(id)) return pubFlash('Enter a campaign ID first (3-40 letters, numbers, dashes).');
-  if (!confirm(`Publish to "${id}"? Every customer who opens this campaign will see the new version straight away.`)) return;
+  if (!confirm(`Publish ${current.tpl.name} (${current.tpl.desc}) to "${id}"? Every customer who opens this campaign will see the new version straight away.`)) return;
   try {
-    const c = await campApi('/api/admin/campaigns/' + id, { method: 'PUT', body: JSON.stringify({ html: generate(true), name: id, template: current.tpl.name }) });
+    const c = await campApi('/api/admin/campaigns/' + id, { method: 'PUT', body: JSON.stringify({
+      html: generate(true), name: $('campName').value.trim(), template: `${current.tpl.name} - ${current.tpl.desc}`, template_file: current.tpl.file,
+    }) });
     showCampaign(c); pubFlash('Published - version ' + c.version + '.');
   } catch (e) { pubFlash(e.message); }
 };
@@ -357,6 +361,9 @@ $('copyLoader').onclick = async () => {
   catch (e) { const t = document.createElement('textarea'); t.value = html; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); pubFlash('Loader copied.'); }
 };
 try { $('campId').value = localStorage.getItem('studio.campaign') || ''; } catch (e) { /* storage unavailable */ }
+const qsCampaign = new URLSearchParams(location.search).get('c'); // ?c=<id> = opened from the admin Campaigns page
+if (qsCampaign && ID_OK.test(qsCampaign)) $('campId').value = qsCampaign;
+$('campId').addEventListener('input', () => ($('campName').value = ''));
 lookupCampaign();
 $('reset').onclick = () => { current.config = clone(current.defaults); renderFields(); renderSegments(); refreshPreview(); };
 
@@ -366,7 +373,17 @@ if (qs.get('embed')) document.body.classList.add('embed');
 let start = TEMPLATES.find((t) => t.file === qs.get('t'));
 try { start = start || TEMPLATES.find((t) => t.file === localStorage.getItem('studio.template')); } catch (e) { /* storage unavailable */ }
 start = start || TEMPLATES[0];
-load(start);
+// ?c=<id>&v=<n>: continue from that published version's settings instead of the template defaults.
+load(start).then(async () => {
+  if (!qsCampaign || !qs.get('v')) return;
+  try {
+    const v = await campApi('/api/admin/campaigns/' + qsCampaign + '/versions/' + encodeURIComponent(qs.get('v')));
+    if (v.template_file !== current.tpl.file) return;
+    current.config = { ...clone(current.defaults), ...parseConfig(v.html) };
+    renderFields(); renderSegments(); refreshPreview();
+    pubFlash(`Loaded the settings of version ${v.version}.`);
+  } catch (e) { pubFlash('Could not load that version: ' + e.message); }
+});
 </script>
 </body>
 </html>

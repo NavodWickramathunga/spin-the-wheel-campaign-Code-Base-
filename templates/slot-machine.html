@@ -740,7 +740,7 @@
 
   GAME.init(ctx);
   setRewards((CONFIG.defaultSegments || []).filter((s) => s && s.name));
-  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text + (previewMode ? ' (Preview mode)' : ''));
+  if (identity || previewMode) showSubtitle(CONFIG.subtitle.text);
   else showMessage('Please open this page from the app to play.');
   updateButton();
   ctx.setHint(CONFIG.hintText || '');

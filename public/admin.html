@@ -29,8 +29,10 @@
     <div class="nav-label">Overview</div>
     <a href="#dashboard" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</a>
     <div class="nav-label">Campaign</div>
+    <a href="#campaigns" data-view="campaigns"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>Campaigns</a>
     <a href="#games" data-view="games"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="4"/><path d="M6 12h4M8 10v4M15 11h.01M18 13h.01"/></svg>Games &amp; templates</a>
     <a href="#prizes" data-view="prizes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v8h14v-8M12 8v12M12 8c-1.5-3-5-3.5-5-1.2C7 8 9.5 8 12 8zm0 0c1.5-3 5-3.5 5-1.2C17 8 14.5 8 12 8z"/></svg>Prizes &amp; vouchers<span class="badge-count" id="stockBadge" hidden></span></a>
+    <a href="#vouchers" data-view="vouchers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>Voucher usage</a>
     <a href="#rules" data-view="rules"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M8 14h3M8 17h6"/></svg>Rules &amp; schedule</a>
     <div class="nav-label">People</div>
     <a href="#customers" data-view="customers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Customer lookup</a>
@@ -67,7 +69,17 @@
     </div>
     <div class="grid two" style="margin-top:16px">
       <div class="card flush">
-        <div class="card-head"><div><h2>Wins by reward</h2><p>Selected period.</p></div></div>
+        <div class="card-head">
+          <div><h2>Wins by reward</h2><p id="wrLabel">Last 14 days.</p></div>
+          <select id="wrPeriod" aria-label="Wins by reward period">
+            <option value="0">Today</option><option value="1">Yesterday</option><option value="7">Last 7 days</option>
+            <option value="14" selected>Last 14 days</option><option value="30">Last 30 days</option><option value="month">This month</option>
+            <option value="all">Last 12 months</option><option value="custom">Custom range…</option>
+          </select>
+          <div class="wr-range" id="wrRange" hidden>
+            <label>From <input type="date" id="wrFrom"></label><label>To <input type="date" id="wrTo"></label>
+          </div>
+        </div>
         <div class="table-wrap"><table id="anRewards"></table></div>
       </div>
       <div class="card flush">
@@ -75,6 +87,23 @@
         <div class="table-wrap"><table id="stockMini"></table></div>
       </div>
     </div>
+  </section>
+
+  <!-- ===================== Campaigns ===================== -->
+  <section class="view" id="view-campaigns" hidden>
+    <div class="page-head">
+      <div><h1>Campaigns</h1><p id="campCount">Loading…</p></div>
+      <div class="actions"><button class="btn secondary" id="campRefresh">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>Refresh</button></div>
+    </div>
+    <div class="alert info">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+      <span>Every campaign published from the Studio, the template it uses now, and every version published before. <b>Running</b> = opened by a customer in the last 2 days. Campaigns pasted into CleverTap as full HTML (the old way) are not tracked here.</span>
+    </div>
+    <h2 class="section-title">Running now</h2>
+    <div class="camp-list" id="campRunning"><p class="empty"><span class="skeleton"></span></p></div>
+    <h2 class="section-title">Past &amp; not yet opened</h2>
+    <div class="camp-list" id="campPast"></div>
   </section>
 
   <!-- ===================== Games & templates ===================== -->
@@ -124,11 +153,40 @@
           <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
         </label>
         <div class="file-info" id="fileInfo" hidden><span class="grow" id="fileName"></span><button class="btn ghost sm" id="clearFile">Remove</button></div>
+        <label class="replace-opt"><input type="checkbox" id="replaceMode"> <span><b>Replace current prizes with this file</b><small>Unused vouchers not in the file are removed, and prizes not in the file are taken off the wheel and this page. Vouchers already won are not affected.</small></span></label>
+        <div class="alert upload-result" id="uploadResult" hidden></div>
         <div class="save-bar"><a class="btn ghost" href="sample-vouchers.csv" download="sample-vouchers.csv">Download sample CSV</a><button class="btn primary" id="upload" disabled>Upload vouchers</button></div>
       </div>
       <div class="card flush">
         <div class="card-head"><div><h2>Stock</h2><p>Low-stock warnings follow the % set under Rules.</p></div></div>
         <div class="table-wrap"><table id="stock"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Voucher usage ===================== -->
+  <section class="view" id="view-vouchers" hidden>
+    <div class="page-head">
+      <div><h1>Voucher usage</h1><p id="vrAsOf">Loading…</p></div>
+      <div class="actions">
+        <button class="btn secondary" id="vrRefresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>Refresh</button>
+        <a class="btn primary" href="/api/admin/voucher-report.csv">Usage report (CSV)</a>
+      </div>
+    </div>
+    <div class="alert info">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+      <span>Vouchers don't all have to be given out. <b>Unused vouchers stay in the shared pool, and the next campaign uses them automatically</b> - there's nothing to move. “Removed” vouchers were taken off by a <i>Replace current prizes</i> upload; they were never given out and come back if you upload them again. Expired vouchers can't be used.</span>
+    </div>
+    <div class="kpis" id="vrStats"></div>
+    <div class="card flush" style="margin-top:16px">
+      <div class="card-head"><div><h2>By reward</h2><p>Used % = given out ÷ uploaded. “Left for next campaign” = unused + removed, not expired.</p></div></div>
+      <div class="table-wrap"><table id="vrTable"></table></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div><h2>Download voucher lists</h2><p>The remaining list uses the upload format (code, reward_name, reward_type, voucher_value, expiry_date), so you can edit it and upload it for an upcoming campaign.</p></div></div>
+      <div class="camp-actions">
+        <a class="btn primary" href="/api/admin/vouchers.csv?status=remaining">Remaining vouchers (CSV)</a>
+        <a class="btn secondary" href="/api/admin/vouchers.csv?status=all">All vouchers with status (CSV)</a>
       </div>
     </div>
   </section>

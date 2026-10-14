@@ -1,7 +1,8 @@
 # Request: Move the "Spin the Wheel" campaign into Dialog's Firebase / Google Cloud
 
-**To:** Dialog IT / Platform team  **From:** Navod Wickramathunga (E-Engagement)
-**Decision needed:** confirmation and consent to host this project in a Dialog-governed Firebase project.
+**To:** Dialog IT / Platform team, UI/UX team  **From:** Navod Wickramathunga (E-Engagement)
+**Decision needed:** (1) IT: confirmation and consent to host this project in a Dialog-governed Firebase project.
+(2) UI/UX: review and approval of the customer-facing screens (section 7).
 
 ## 1. Why we are asking
 
@@ -15,6 +16,8 @@ project, in the same environment the internal MDA team already uses.
 Customers see a game (spin wheel, scratch card, gift box, flip card, slot machine) as a CleverTap in-app popup.
 The popup calls our API. The server alone decides the prize, allocates a voucher code, and enforces caps and cooldowns.
 An admin console manages prizes, voucher uploads, schedule, reports and customer lookup.
+
+![High-level architecture](architecture-diagram.png)
 
 | Part | Technology | Notes |
 |---|---|---|
@@ -65,12 +68,40 @@ No other third-party services, no analytics SDKs, no client-side database access
 - Secret mismatch (`STW_TOKEN_SECRET`) would cause tokens issued by Dialog's backend to be rejected; use `TOKEN_MODE=log` first, then `enforce`.
 - Costs: usage-based; expected volume is low (one function call per popup step). IT can set a budget alert.
 
-## 7. Please reply with
+## 7. UI / UX approval
+
+The customer-facing screens must be approved by the UI/UX (and brand) team before go-live. Nothing here changes
+the prize logic; these are the screens a customer sees.
+
+| # | Item | Where to preview | What to review |
+|---|---|---|---|
+| 1 | Dialog Pay wheel (primary design) | `/wheel-dialogpay.html` | Brand colours, logo, fonts, wording |
+| 2 | Alternative wheels: Classic, Neon, Refined Plus | `/wheel-classic.html`, `/wheel-neon.html`, `/wheel-refined-plus.html` | Pick which to keep or drop |
+| 3 | Games: Scratch Card, Gift Box, Flip Card, Slot Machine | `/game-scratch-card.html`, `/game-gift-box.html`, `/game-flip-card.html`, `/game-slot-machine.html` | Look and feel, animation, wording |
+| 4 | Result screens | win, no-win, voucher code + copy button | Message tone, clarity of how to redeem |
+| 5 | Blocked states | "already won", "used your spins", paused/outside schedule (popup closes silently) | Wording, no confusing or leaking messages |
+| 6 | Template Studio (internal) | `/studio.html` | Only if the team will use it to produce new designs |
+| 7 | Admin console (internal) | `/admin.html` | Usability for campaign staff |
+
+Checks to tick for each customer-facing screen:
+
+- [ ] Brand: logo, colours, typography, imagery match Dialog guidelines
+- [ ] Copy: wording (English; Sinhala/Tamil needed?), terms and conditions link, voucher expiry text
+- [ ] Layout: works on small phones and in the CleverTap in-app popup frame (portrait and landscape)
+- [ ] Accessibility: text contrast, tap-target size, readable at default font scale, reduced-motion behaviour
+- [ ] Performance: loads quickly on mobile data; animations smooth on low-end Android
+- [ ] Fairness: no wording that implies a prize was "nearly won" (the server decides the prize regardless of the pick)
+
+UI/UX decisions needed: ______________ (chosen design), ______________ (languages), ______________ (T&C link).
+
+## 8. Please reply with
 
 - [ ] Approved to host in Dialog Firebase project: ______________ (project ID)
 - [ ] IT owner: ______________
 - [ ] Policy requirements / conditions: ______________
 - [ ] Preferred hostname: ______________
+- [ ] UI/UX approval (design chosen, comments): ______________ (name, date)
+- [ ] Brand / marketing approval: ______________ (name, date)
 
 The source is in this folder (`README.md` has the full technical detail). `node_modules/`, `wheel.db*`,
 `firestore-debug.log`, `server.js` and `db.js` are local-development files and should not be transferred.

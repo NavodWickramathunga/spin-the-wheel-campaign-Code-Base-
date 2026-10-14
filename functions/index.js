@@ -12,7 +12,8 @@ const db = getFirestore();
 // Docs with expire_at are deleted by Firestore TTL policies (see README).
 //   settings/main            caps, cooldown, spin limits, schedule, paused, low_stock_pct
 //   rewards/{id}             name, weight, active, is_no_win, daily_limit, created_at, available, allocated, expired
-//   vouchers/{code}          code, reward_name, reward_type, voucher_value, expiry_date, status, allocated_to (pid), allocated_at
+//   vouchers/{code}          code, reward_name, reward_type, voucher_value, expiry_date, status (available | allocated | expired | removed),
+//                            allocated_to (pid), allocated_at, uploaded_at, removed_at
 //   winners/{pid}            last_win_at, expire_at   (one doc per customer -> enforces the cooldown)
 //   spinners/{pid}           day, day_count, week, week_count, expire_at   (per-customer spin limits)
 //   wins/{auto}              one row per win (the report): mobile_hash (pid), mobile_masked, ..., expire_at
@@ -20,7 +21,9 @@ const db = getFirestore();
 //   stats/week_{date}        wins
 //   stats/act_{date}         spins, hours{HH: n}   (analytics only, never read during a spin)
 //   stats/total              spins
-//   campaigns/{id}           name, template, html, version, published_at/by, previous {html, version, published_at}   (Studio "Publish"; served to the CleverTap loader)
+//   campaigns/{id}           name, template, template_file, html, version, published_at/by, created_at, last_seen_at, templates_used[],
+//                            previous {html, version, published_at, template, template_file}   (Studio "Publish"; served to the CleverTap loader)
+//   campaigns/{id}/versions/{n}  version, template, template_file, html, published_at/by, action   (full publish history)
 //   admins/{username}        salt, hash, role (admin | viewer), created_at, created_by
 //   login_fails/{sha(user)}  count, first_at, locked_until, expire_at   (admin sign-in lockout)
 //   audit/{auto}             at, user, action, details, expire_at
@@ -467,43 +470,94 @@ app.get('/api/campaign/:id', wrap(async (req, res) => {
   res.set('Cache-Control', 'no-cache');
   if (!snap || !snap.exists) return res.status(404).json({ error: 'Not found' });
   const d = snap.data();
+  // "Last opened" for the admin Campaigns page; written at most every 15 minutes per campaign.
+  if (!d.last_seen_at || Date.now() - Date.parse(d.last_seen_at) > 15 * 60000) {
+    snap.ref.update({ last_seen_at: new Date().toISOString() }).catch((e) => console.error('last_seen', e));
+  }
   res.json({ html: d.html, version: d.version });
 }));
-const campaignInfo = (id, d) => ({ id, name: d.name, template: d.template, version: d.version, published_at: d.published_at, published_by: d.published_by, can_rollback: !!d.previous });
+const campaignInfo = (id, d) => ({
+  id, name: d.name, template: d.template, template_file: d.template_file || '', version: d.version,
+  published_at: d.published_at, published_by: d.published_by, created_at: d.created_at || null, last_seen_at: d.last_seen_at || null,
+  templates_used: d.templates_used || (d.template ? [d.template_file || d.template] : []), can_rollback: !!d.previous,
+});
+const versionInfo = (v) => ({ version: v.version, template: v.template || '', template_file: v.template_file || '', published_at: v.published_at, published_by: v.published_by || '', action: v.action || 'Published' });
+// Every publish / rollback / restore writes the new live page to the main doc and a copy to campaigns/{id}/versions/{n}.
+function writeVersion(tx, ref, old, page, user, action) {
+  const now = new Date().toISOString(), version = (old?.version || 0) + 1;
+  // templates_used holds template files (older publishes only recorded a display name).
+  const used = old ? (old.templates_used || (old.template ? [old.template_file || old.template] : [])) : [], tpl = page.template_file || page.template;
+  const doc = {
+    name: page.name || old?.name || ref.id, template: page.template, template_file: page.template_file, html: page.html,
+    version, published_at: now, published_by: user, created_at: old?.created_at || old?.published_at || now,
+    last_seen_at: old?.last_seen_at || null,
+    templates_used: tpl && !used.includes(tpl) ? [...used, tpl] : used,
+    previous: old ? { html: old.html, version: old.version, published_at: old.published_at, template: old.template || '', template_file: old.template_file || '' } : null,
+  };
+  tx.set(ref, doc);
+  tx.set(ref.collection('versions').doc(String(version)), {
+    version, template: page.template, template_file: page.template_file, html: page.html, published_at: now, published_by: user, action,
+  });
+  return doc;
+}
+// Campaigns published before version history existed only have the live page and the one before it.
+async function campaignVersions(ref, d) {
+  const list = (await ref.collection('versions').get()).docs.map((x) => x.data());
+  const has = (n) => list.some((v) => v.version === n);
+  if (!has(d.version)) list.push({ version: d.version, template: d.template, template_file: d.template_file, html: d.html, published_at: d.published_at, published_by: d.published_by });
+  const p = d.previous;
+  if (p && !has(p.version)) list.push({ version: p.version, template: p.template || '', template_file: p.template_file || '', html: p.html, published_at: p.published_at });
+  return list.sort((a, b) => b.version - a.version);
+}
 app.get('/api/admin/campaigns', wrap(async (req, res) => {
   const snap = await db.collection('campaigns').get();
   res.json(snap.docs.map((x) => campaignInfo(x.id, x.data())).sort((a, b) => String(b.published_at).localeCompare(String(a.published_at))));
 }));
-app.put('/api/admin/campaigns/:id', wrap(async (req, res) => {
-  const id = req.params.id, { html, name, template } = req.body || {};
+app.get('/api/admin/campaigns/:id/versions', wrap(async (req, res) => {
+  const ref = db.collection('campaigns').doc(req.params.id), snap = CAMPAIGN_ID.test(req.params.id) ? await ref.get() : null;
+  if (!snap || !snap.exists) return res.status(404).json({ error: 'Campaign not found.' });
+  res.json((await campaignVersions(ref, snap.data())).map(versionInfo));
+}));
+app.get('/api/admin/campaigns/:id/versions/:v', wrap(async (req, res) => {
+  const ref = db.collection('campaigns').doc(req.params.id), snap = CAMPAIGN_ID.test(req.params.id) ? await ref.get() : null;
+  if (!snap || !snap.exists) return res.status(404).json({ error: 'Campaign not found.' });
+  const v = (await campaignVersions(ref, snap.data())).find((x) => x.version === Number(req.params.v));
+  if (!v) return res.status(404).json({ error: 'That version is no longer stored.' });
+  res.json({ ...versionInfo(v), html: v.html });
+}));
+app.put('/api/admin/campaigns/:id', adminOnly, wrap(async (req, res) => {
+  const id = req.params.id, { html, name, template, template_file } = req.body || {};
   if (!CAMPAIGN_ID.test(id)) return res.status(400).json({ error: 'Campaign ID: 3-40 characters, lowercase letters, numbers and dashes.' });
   if (typeof html !== 'string' || !html.includes('const CONFIG') || html.length > MAX_CAMPAIGN_HTML) return res.status(400).json({ error: 'That does not look like a valid template.' });
   const ref = db.collection('campaigns').doc(id);
-  const out = await db.runTransaction(async (tx) => {
-    const old = (await tx.get(ref)).data();
-    const doc = {
-      name: String(name || id).slice(0, 80), template: String(template || '').slice(0, 60), html,
-      version: (old?.version || 0) + 1, published_at: new Date().toISOString(), published_by: req.admin.user,
-      previous: old ? { html: old.html, version: old.version, published_at: old.published_at } : null,
-    };
-    tx.set(ref, doc);
-    return doc;
-  });
-  audit(req, 'Published campaign', { id, version: out.version });
+  const out = await db.runTransaction(async (tx) => writeVersion(tx, ref, (await tx.get(ref)).data(), {
+    html, name: String(name || '').trim().slice(0, 80), template: String(template || '').slice(0, 80), template_file: String(template_file || '').slice(0, 60),
+  }, req.admin.user, 'Published'));
+  audit(req, 'Published campaign', { id, version: out.version, template: out.template });
   res.json(campaignInfo(id, out));
 }));
-app.post('/api/admin/campaigns/:id/rollback', wrap(async (req, res) => {
-  const ref = db.collection('campaigns').doc(req.params.id);
-  const out = await db.runTransaction(async (tx) => {
-    const old = (await tx.get(ref)).data();
-    if (!old?.previous) return null;
-    const doc = { ...old, html: old.previous.html, version: old.version + 1, published_at: new Date().toISOString(), published_by: req.admin.user, previous: null };
-    tx.set(ref, doc);
-    return doc;
-  });
-  if (!out) return res.status(400).json({ error: 'No earlier version to go back to.' });
-  audit(req, 'Rolled back campaign', { id: req.params.id, version: out.version });
-  res.json(campaignInfo(req.params.id, out));
+// Makes an earlier version live again (as a new version number, so the history stays complete).
+async function restoreVersion(req, res, pickVersion) {
+  const id = req.params.id, ref = db.collection('campaigns').doc(id);
+  if (!CAMPAIGN_ID.test(id)) return res.status(404).json({ error: 'Campaign not found.' });
+  const snap = await ref.get();
+  if (!snap.exists) return res.status(404).json({ error: 'Campaign not found.' });
+  const n = pickVersion(snap.data());
+  const src = n && (await campaignVersions(ref, snap.data())).find((x) => x.version === n);
+  if (!src || n === snap.data().version) return res.status(400).json({ error: 'No earlier version to go back to.' });
+  const out = await db.runTransaction(async (tx) => writeVersion(tx, ref, (await tx.get(ref)).data(), src, req.admin.user, `Restored version ${n}`));
+  audit(req, 'Restored campaign version', { id, from_version: n, version: out.version });
+  res.json(campaignInfo(id, out));
+}
+app.post('/api/admin/campaigns/:id/rollback', adminOnly, wrap((req, res) => restoreVersion(req, res, (d) => d.previous?.version)));
+app.post('/api/admin/campaigns/:id/restore', adminOnly, wrap((req, res) => restoreVersion(req, res, () => Number((req.body || {}).version))));
+app.put('/api/admin/campaigns/:id/name', adminOnly, wrap(async (req, res) => {
+  const id = req.params.id, ref = db.collection('campaigns').doc(id), name = String((req.body || {}).name || '').trim().slice(0, 80);
+  if (!name) return res.status(400).json({ error: 'Enter a name.' });
+  if (!CAMPAIGN_ID.test(id) || !(await ref.get()).exists) return res.status(404).json({ error: 'Campaign not found.' });
+  await ref.update({ name });
+  audit(req, 'Renamed campaign', { id, name });
+  res.json({ ok: true });
 }));
 
 app.get('/api/admin/me', (req, res) => res.json({ user: req.admin.user, role: req.admin.role, owner: !!req.admin.owner }));
@@ -554,7 +608,7 @@ app.get('/api/admin/summary', wrap(async (req, res) => {
     winsThisWeek: w.exists ? w.data().wins || 0 : 0,
     spinsToday: act.exists ? act.data().spins || 0 : 0,
     totalSpins: tot.exists ? tot.data().spins || 0 : 0,
-    stock: rw.docs.map(rewardRow).filter((r) => !r.is_no_win).sort(byOrder).map((r) => {
+    stock: rw.docs.map(rewardRow).filter((r) => !r.is_no_win && !r.archived).sort(byOrder).map((r) => {
       const available = r.available || 0, allocated = r.allocated || 0, expired = r.expired || 0;
       const total = available + allocated + expired;
       const level = available <= 0 ? 'out' : available <= Math.ceil((total * s.low_stock_pct) / 100) ? 'low' : '';
@@ -583,11 +637,29 @@ app.get('/api/admin/analytics', wrap(async (req, res) => {
   res.json({ days, byReward, hoursToday: Array.from({ length: 24 }, (_, h) => last[String(h).padStart(2, '0')] || 0) });
 }));
 
+// Wins per reward for any date range (inclusive, Sri Lanka days), read from the daily stats docs.
+app.get('/api/admin/wins-by-reward', wrap(async (req, res) => {
+  const today = dayKey(new Date());
+  const from = DATE_RE.test(req.query.from || '') ? req.query.from : addDays(today, -13);
+  const to = DATE_RE.test(req.query.to || '') ? req.query.to : today;
+  if (from > to) return res.status(400).json({ error: '"From" must be on or before "To"' });
+  const n = Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS) + 1;
+  if (n > 366) return res.status(400).json({ error: 'Pick a range of one year or less' });
+  const keys = Array.from({ length: n }, (_, i) => addDays(from, i));
+  const [daySnaps, rw] = await Promise.all([db.getAll(...keys.map((k) => db.collection('stats').doc('day_' + k))), db.collection('rewards').get()]);
+  const names = Object.fromEntries(rw.docs.map((d) => [d.id, d.data().name]));
+  const byReward = {};
+  daySnaps.forEach((s) => {
+    for (const [id, c] of Object.entries((s.exists && s.data().reward_wins) || {})) byReward[names[id] || id] = (byReward[names[id] || id] || 0) + c;
+  });
+  res.json({ from, to, byReward });
+}));
+
 // ---------- segments ----------
 app.get('/api/admin/rewards', wrap(async (req, res) => {
   await ensureSeed();
   const snap = await db.collection('rewards').get();
-  res.json(snap.docs.map(rewardRow).sort(byOrder).map((r) => ({
+  res.json(snap.docs.map(rewardRow).filter((r) => !r.archived).sort(byOrder).map((r) => ({
     id: r.id, name: r.name, weight: r.weight, active: r.active ? 1 : 0, is_no_win: r.is_no_win ? 1 : 0, daily_limit: r.daily_limit || 0,
   })));
 }));
@@ -614,35 +686,55 @@ app.post('/api/admin/vouchers', wrap(async (req, res) => {
   const rows = parseCsv(text.replace(/^﻿/, ''));
   if (rows.length && /^code$/i.test(rows[0][0].trim())) rows.shift(); // header
   let added = 0, duplicates = 0, invalid = 0;
+  // Sample of what was skipped and why, so the console can show it (capped to keep the response small).
+  const skipped = [], skip = (row, code, reason) => { if (skipped.length < 50) skipped.push({ row, code, reason }); };
+  const counts = {}, newRewards = [];
 
   const seen = new Set(), fresh = [];
-  for (const [code, name, type, value, expiry] of rows) {
-    const exp = parseExpiry(expiry);
-    if (!code?.trim() || !name?.trim() || exp === null) { invalid++; continue; }
-    const c = code.trim();
-    if (c === '.' || c === '..' || seen.has(c)) { duplicates++; continue; }
+  rows.forEach(([code, name, type, value, expiry], i) => {
+    const row = i + 2, exp = parseExpiry(expiry), c = (code || '').trim();
+    if (!c || !name?.trim()) { invalid++; return skip(row, c, 'missing code or reward_name'); }
+    if (exp === null) { invalid++; return skip(row, c, `expiry "${String(expiry).trim()}" not YYYY-MM-DD or DD/MM/YYYY`); }
+    if (c === '.' || c === '..') { invalid++; return skip(row, c, 'invalid code'); }
+    if (seen.has(c)) { duplicates++; return skip(row, c, 'repeated in this file'); }
     seen.add(c);
-    fresh.push({ code: c, reward_name: name.trim(), reward_type: (type || '').trim(), voucher_value: (value || '').trim(), expiry_date: exp });
-  }
-  // Drop codes that already exist (a code can be fed only once).
+    fresh.push({ row, v: { code: c, reward_name: name.trim(), reward_type: (type || '').trim(), voucher_value: (value || '').trim(), expiry_date: exp } });
+  });
+  // replace=1: the file becomes the full prize list - unused vouchers not in it are retired and their rewards hidden.
+  const replace = req.query.mode === 'replace';
+  if (replace && !fresh.length) return res.status(400).json({ error: 'No valid rows in the file - nothing was replaced.' });
+  let kept = 0, removed = 0;
+  const removedByReward = {}, hiddenRewards = [];
+
+  // Drop codes that already exist (a code can be fed only once). Codes retired by an earlier replace come back
+  // (they were never given out); when replacing, codes still unused are kept.
   const toAdd = [];
   for (let i = 0; i < fresh.length; i += 300) {
     const chunk = fresh.slice(i, i + 300);
-    const snaps = await db.getAll(...chunk.map((v) => db.collection('vouchers').doc(enc(v.code))));
-    snaps.forEach((s, k) => (s.exists ? duplicates++ : toAdd.push(chunk[k])));
+    const snaps = await db.getAll(...chunk.map((f) => db.collection('vouchers').doc(enc(f.v.code))));
+    snaps.forEach((s, k) => {
+      const st = s.exists && s.data().status;
+      if (!s.exists || st === 'removed') toAdd.push(chunk[k].v);
+      else if (replace && st === 'available') kept++;
+      else { duplicates++; skip(chunk[k].row, chunk[k].v.code, st === 'available' ? 'already uploaded before' : `already ${st || 'used'}`); }
+    });
   }
   if (toAdd.length) {
-    const counts = {};
     toAdd.forEach((v) => (counts[v.reward_name] = (counts[v.reward_name] || 0) + 1));
     const names = Object.keys(counts);
     const rewardRefs = names.map((n) => db.collection('rewards').doc(enc(n)));
     const rewardSnaps = await db.getAll(...rewardRefs);
     const ops = [];
     names.forEach((n, i) => {
-      if (rewardSnaps[i].exists) ops.push((b) => b.update(rewardRefs[i], { available: FieldValue.increment(counts[n]) }));
-      else ops.push((b) => b.set(rewardRefs[i], { name: n, weight: 1, active: true, is_no_win: false, daily_limit: 0, created_at: new Date().toISOString(), available: counts[n], allocated: 0, expired: 0 }));
+      // An archived reward that gets vouchers again comes back onto the wheel.
+      if (rewardSnaps[i].exists) ops.push((b) => b.update(rewardRefs[i], { available: FieldValue.increment(counts[n]), ...(replace || rewardSnaps[i].data().archived ? { active: true, archived: false } : {}) }));
+      else {
+        newRewards.push(n);
+        ops.push((b) => b.set(rewardRefs[i], { name: n, weight: 1, active: true, is_no_win: false, daily_limit: 0, created_at: new Date().toISOString(), available: counts[n], allocated: 0, expired: 0 }));
+      }
     });
-    toAdd.forEach((v) => ops.push((b) => b.set(db.collection('vouchers').doc(enc(v.code)), { ...v, status: 'available', allocated_to: null, allocated_at: null })));
+    const uploadedAt = new Date().toISOString();
+    toAdd.forEach((v) => ops.push((b) => b.set(db.collection('vouchers').doc(enc(v.code)), { ...v, status: 'available', allocated_to: null, allocated_at: null, uploaded_at: uploadedAt })));
     for (let i = 0; i < ops.length; i += 400) {
       const b = db.batch();
       ops.slice(i, i + 400).forEach((op) => op(b));
@@ -650,8 +742,40 @@ app.post('/api/admin/vouchers', wrap(async (req, res) => {
     }
     added = toAdd.length;
   }
-  audit(req, 'Uploaded vouchers', { added, duplicates, invalid });
-  res.json({ added, duplicates, invalid });
+  if (replace) {
+    const inFile = new Set(fresh.map((f) => f.v.code));
+    const fileRewards = new Set(fresh.map((f) => f.v.reward_name));
+    const rewardDocs = (await db.collection('rewards').get()).docs;
+    const rewardRefByName = Object.fromEntries(rewardDocs.map((d) => [d.data().name, d.ref]));
+    const stale = (await db.collection('vouchers').where('status', '==', 'available').get()).docs.filter((d) => !inFile.has(d.data().code));
+    // Retire in transactions, re-checking status, so a voucher being won right now is never pulled from the winner.
+    for (let i = 0; i < stale.length; i += 200) {
+      const refs = stale.slice(i, i + 200).map((d) => d.ref);
+      const done = await db.runTransaction(async (t) => {
+        const snaps = await t.getAll(...refs), per = {};
+        const nowIso = new Date().toISOString();
+        snaps.filter((s) => s.exists && s.data().status === 'available').forEach((s) => {
+          const n = s.data().reward_name;
+          per[n] = (per[n] || 0) + 1;
+          t.update(s.ref, { status: 'removed', removed_at: nowIso });
+        });
+        Object.entries(per).forEach(([n, c]) => { if (rewardRefByName[n]) t.update(rewardRefByName[n], { available: FieldValue.increment(-c) }); });
+        return per;
+      });
+      Object.entries(done).forEach(([n, c]) => { removedByReward[n] = (removedByReward[n] || 0) + c; removed += c; });
+    }
+    const b = db.batch();
+    rewardDocs.forEach((d) => {
+      const r = d.data();
+      // Archived, not deleted: past wins, reports and analytics still refer to it; it just leaves the admin lists.
+      if (!r.is_no_win && !fileRewards.has(r.name) && !r.archived) { hiddenRewards.push(r.name); b.update(d.ref, { active: false, archived: true }); }
+    });
+    if (hiddenRewards.length) await b.commit();
+  }
+  audit(req, replace ? 'Replaced vouchers' : 'Uploaded vouchers', {
+    added, duplicates, invalid, byReward: counts, newRewards, ...(replace ? { kept, removed, removedByReward, hiddenRewards } : {}),
+  });
+  res.json({ added, duplicates, invalid, byReward: counts, newRewards, skipped, replace, kept, removed, removedByReward, hiddenRewards });
 }));
 
 // ---------- winners & customer lookup ----------
@@ -663,6 +787,73 @@ async function winsBetween(from, to, limit) {
 app.get('/api/admin/winners', wrap(async (req, res) => {
   res.json(await winsBetween('0000', '9999', 1000));
 }));
+// ---------- voucher usage: what was uploaded, given out, and is left over for the next campaign ----------
+// Unused vouchers stay in the shared pool, so every later campaign keeps drawing from them.
+// Given out / expired come from the reward counters; the leftovers (available + removed) are read one by one,
+// because "available" vouchers past their expiry date are only marked expired when a spin meets them.
+const EXPIRING_DAYS = 30;
+const VOUCHER_STATUS = { available: 'Unused', allocated: 'Given out', expired: 'Expired', removed: 'Removed (unused)' };
+const voucherStatus = (v, today) => (v.status === 'available' && isExpired(v, today) ? 'Expired (unused)' : VOUCHER_STATUS[v.status] || v.status);
+async function voucherReport() {
+  const now = new Date(), today = dayKey(now), soon = dayKey(new Date(now.getTime() + EXPIRING_DAYS * DAY_MS));
+  const [rw, avail, removed] = await Promise.all([
+    db.collection('rewards').get(),
+    db.collection('vouchers').where('status', '==', 'available').get(),
+    db.collection('vouchers').where('status', '==', 'removed').get(),
+  ]);
+  const rows = {};
+  const row = (name) => (rows[name] ||= { name, on_wheel: false, given_out: 0, expired: 0, unused: 0, expired_unused: 0, expiring_soon: 0, removed: 0, value: '', next_expiry: '' });
+  rw.docs.map(rewardRow).filter((r) => !r.is_no_win).sort(byOrder).forEach((r) => {
+    Object.assign(row(r.name), { on_wheel: !!r.active && !r.archived, given_out: r.allocated || 0, expired: r.expired || 0 });
+  });
+  avail.docs.forEach((d) => {
+    const v = d.data(), r = row(v.reward_name);
+    r.value ||= v.voucher_value || '';
+    if (isExpired(v, today)) return r.expired_unused++;
+    r.unused++;
+    if (v.expiry_date && v.expiry_date <= soon) r.expiring_soon++;
+    if (v.expiry_date && (!r.next_expiry || v.expiry_date < r.next_expiry)) r.next_expiry = v.expiry_date;
+  });
+  removed.docs.forEach((d) => { const v = d.data(), r = row(v.reward_name); r.value ||= v.voucher_value || ''; if (!isExpired(v, today)) r.removed++; else r.expired_unused++; });
+  const list = Object.values(rows).map((r) => ({ ...r, uploaded: r.given_out + r.expired + r.expired_unused + r.unused + r.removed }));
+  const sum = (k) => list.reduce((s, r) => s + r[k], 0);
+  return {
+    as_of: now.toISOString(), expiring_days: EXPIRING_DAYS, rewards: list,
+    totals: Object.fromEntries(['uploaded', 'given_out', 'unused', 'expiring_soon', 'expired', 'expired_unused', 'removed'].map((k) => [k, sum(k)])),
+  };
+}
+app.get('/api/admin/voucher-report', wrap(async (req, res) => res.json(await voucherReport())));
+const sendCsv = (res, name, head, rows) => res.set({
+  'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}-${dayKey(new Date())}.csv"`,
+}).send('﻿' + [head.join(','), ...rows.map((r) => r.map(csvEscape).join(','))].join('\r\n'));
+app.get('/api/admin/voucher-report.csv', wrap(async (req, res) => {
+  const rep = await voucherReport();
+  const line = (r, name, onWheel) => [name, onWheel, r.value || '', r.uploaded, r.given_out, r.uploaded ? Math.round((r.given_out / r.uploaded) * 100) + '%' : '',
+    r.unused, r.expiring_soon, r.next_expiry || '', r.expired + r.expired_unused, r.removed, r.unused + r.removed];
+  sendCsv(res, 'voucher-usage', ['Reward', 'On the wheel', 'Voucher value', 'Uploaded', 'Given out', 'Used %', 'Unused (valid)',
+    `Expiring in ${EXPIRING_DAYS} days`, 'Next expiry', 'Expired', 'Removed by replace (valid)', 'Left for next campaign'],
+  [...rep.rewards.map((r) => line(r, r.name, r.on_wheel ? 'Yes' : 'No')), line({ ...rep.totals, value: '' }, 'TOTAL', '')]);
+}));
+// ?status=remaining (default): valid unused + removed vouchers in the upload format, so the file can be uploaded
+// again for the next campaign. ?status=all: every voucher with its status.
+app.get('/api/admin/vouchers.csv', wrap(async (req, res) => {
+  const all = req.query.status === 'all', today = dayKey(new Date());
+  let docs;
+  if (all) docs = (await db.collection('vouchers').get()).docs;
+  else {
+    const [a, r] = await Promise.all(['available', 'removed'].map((s) => db.collection('vouchers').where('status', '==', s).get()));
+    docs = [...a.docs, ...r.docs].filter((d) => !isExpired(d.data(), today));
+  }
+  const list = docs.map((d) => d.data()).sort((x, y) => x.reward_name.localeCompare(y.reward_name) || String(x.code).localeCompare(String(y.code)));
+  const base = (v) => [v.code, v.reward_name, v.reward_type, v.voucher_value, v.expiry_date];
+  if (all) {
+    sendCsv(res, 'vouchers-all', ['code', 'reward_name', 'reward_type', 'voucher_value', 'expiry_date', 'status', 'given_out_at (Sri Lanka time)', 'uploaded_at (Sri Lanka time)'],
+      list.map((v) => [...base(v), voucherStatus(v, today), v.allocated_at ? localStamp(v.allocated_at) : '', v.uploaded_at ? localStamp(v.uploaded_at) : '']));
+  } else {
+    sendCsv(res, 'vouchers-remaining', ['code', 'reward_name', 'reward_type', 'voucher_value', 'expiry_date', 'status'], list.map((v) => [...base(v), voucherStatus(v, today)]));
+  }
+}));
+
 app.get('/api/admin/winners.csv', wrap(async (req, res) => {
   // optional ?date=YYYY-MM-DD limits the report to that day (Sri Lanka time by default)
   let from = '0000', to = '9999';

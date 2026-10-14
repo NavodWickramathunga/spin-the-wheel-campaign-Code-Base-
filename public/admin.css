@@ -67,6 +67,9 @@ a { color: var(--brand); }
 .card-head p, .help { margin: 3px 0 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
 .card.flush { padding: 0; overflow: hidden; }
 .card.flush .card-head { padding: 18px 20px 0; }
+.wr-range { display: flex; gap: 10px; flex-wrap: wrap; width: 100%; font-size: 13px; color: var(--muted); }
+.wr-range[hidden] { display: none; }
+.wr-range label { display: flex; align-items: center; gap: 6px; }
 
 /* KPI tiles */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
@@ -168,6 +171,19 @@ td input[type=number] { width: 96px; height: 34px; }
 .axis span { flex: 1; min-width: 0; text-align: center; overflow: visible; white-space: nowrap; }
 details.table-view summary { margin-top: 14px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--brand); }
 
+/* campaigns */
+.section-title { margin: 22px 0 10px; font-size: 15px; }
+.camp-list { display: grid; gap: 12px; }
+.camp-list > .empty { background: var(--card); border: 1px dashed var(--line); border-radius: var(--radius); }
+.camp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.camp-head h3 { margin: 0 0 2px; font-size: 16px; }
+.camp-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 18px; margin: 14px 0; font-size: 13px; }
+.camp-meta dt { color: var(--muted); font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+.camp-meta dd { margin: 0; line-height: 1.45; }
+.camp-used { display: flex; flex-wrap: wrap; gap: 4px; }
+.camp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.camp-history { margin-top: 14px; border-top: 1px solid var(--line-2); padding-top: 10px; }
+
 /* games gallery */
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
 .game-card { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; transition: box-shadow .2s, transform .2s; }
@@ -199,6 +215,13 @@ details.table-view summary { margin-top: 14px; cursor: pointer; font-size: 13px;
 .dropzone small { color: var(--muted); }
 .file-info { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--line-2); font-size: 13px; }
 .file-info .grow { flex: 1; }
+.replace-opt { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; font-size: 13px; cursor: pointer; }
+.replace-opt input { margin-top: 3px; }
+.replace-opt small { display: block; color: var(--muted); margin-top: 2px; }
+.upload-result { display: block; margin: 12px 0 0; }
+.upload-result ul { margin: 6px 0 0; padding-left: 18px; }
+.upload-result details { margin-top: 6px; }
+.upload-result summary { cursor: pointer; font-weight: 600; }
 
 /* customer lookup */
 .search-row { display: flex; gap: 8px; max-width: 520px; }

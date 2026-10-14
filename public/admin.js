@@ -55,21 +55,25 @@ async function busy(btn, work) {
 }
 
 // ---------- routing ----------
-const VIEWS = ['dashboard', 'games', 'studio', 'prizes', 'rules', 'customers', 'winners', 'team', 'activity'];
+const VIEWS = ['dashboard', 'campaigns', 'games', 'studio', 'prizes', 'vouchers', 'rules', 'customers', 'winners', 'team', 'activity'];
 const loaded = {};
 function route() {
   const [name, query] = (location.hash.slice(1) || 'dashboard').split('?');
   const view = VIEWS.includes(name) && !(name === 'team' && !isAdmin()) ? name : 'dashboard';
   VIEWS.forEach((v) => ($('view-' + v).hidden = v !== view));
-  document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view || (view === 'studio' && a.dataset.view === 'games')));
+  const studioFrom = view === 'studio' && /[?&]c=/.test(query || '') ? 'campaigns' : 'games';
+  document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view || (view === 'studio' && a.dataset.view === studioFrom)));
   document.body.classList.remove('nav-open');
   window.scrollTo(0, 0);
   if (view === 'games' && !loaded.games) { loaded.games = true; buildGallery(); }
   if (view === 'studio') {
-    const t = new URLSearchParams(query || '').get('t') || TEMPLATES[0].file;
-    const src = 'studio.html?embed=1&t=' + encodeURIComponent(t);
+    const q = new URLSearchParams(query || '');
+    if (!q.get('t')) q.set('t', TEMPLATES[0].file);
+    const src = 'studio.html?embed=1&' + q.toString();
     if ($('studioFrame').getAttribute('src') !== src) $('studioFrame').setAttribute('src', src);
   }
+  if (view === 'campaigns') loadCampaigns();
+  if (view === 'vouchers') loadVoucherReport();
   if (view === 'team' && !loaded.team) { loaded.team = true; loadUsers(); }
   if (view === 'activity') loadAudit();
 }
@@ -94,7 +98,7 @@ async function load() {
   showOverview();
   setRewards(rw);
   renderWinners();
-  loadAnalytics();
+  loadAnalytics(); loadWinsByReward();
 }
 async function refreshSummary() {
   summary = await api('/api/admin/summary');
@@ -152,8 +156,8 @@ $('pauseBtn').onclick = async () => {
   busy($('pauseBtn'), () => send('/api/admin/pause', 'PUT', { paused: !paused }))
     .then(() => { toast(paused ? 'Games resumed' : 'Games paused', 'ok'); return refreshSummary(); }).catch(fail);
 };
-$('refreshBtn').onclick = () => busy($('refreshBtn'), () => Promise.all([refreshSummary(), loadAnalytics()])).catch(fail);
-setInterval(() => { if (!$('view-dashboard').hidden && document.visibilityState === 'visible') { refreshSummary().catch(() => {}); loadAnalytics(); } }, 60000);
+$('refreshBtn').onclick = () => busy($('refreshBtn'), () => Promise.all([refreshSummary(), loadAnalytics(), loadWinsByReward()])).catch(fail);
+setInterval(() => { if (!$('view-dashboard').hidden && document.visibilityState === 'visible') { refreshSummary().catch(() => {}); loadAnalytics(); loadWinsByReward(); } }, 60000);
 
 // ---------- analytics ----------
 function barChart(chartId, axisId, items, labelEvery) {
@@ -170,16 +174,45 @@ async function loadAnalytics() {
     barChart('chWins', 'axWins', a.days.map((d) => ({ value: d.wins, label: shortDate(d.date), tip: `${shortDate(d.date)}: ${d.wins} winners` })), every);
     const hh = (h) => String(h).padStart(2, '0');
     barChart('chHours', 'axHours', a.hoursToday.map((v, h) => ({ value: v, label: hh(h), tip: `${hh(h)}:00-${hh(h)}:59: ${v} plays` })), 4);
-    const total = Object.values(a.byReward).reduce((x, y) => x + y, 0);
-    const rows = Object.entries(a.byReward).sort((x, y) => y[1] - x[1]);
-    $('anRewards').innerHTML = '<tr><th>Reward</th><th class="num">Wins</th><th>Share</th></tr>' + (rows.length
-      ? rows.map(([n, c]) => { const p = Math.round((c / total) * 100); return `<tr><td>${esc(n)}</td><td class="num">${c}</td><td><div class="meter"><i><b style="width:${p}%"></b></i><span>${p}%</span></div></td></tr>`; }).join('')
-      : '<tr><td colspan="3" class="empty">No wins in this period yet.</td></tr>');
     $('anTable').innerHTML = '<tr><th>Date</th><th class="num">Plays</th><th class="num">Winners</th><th class="num">Win rate</th></tr>' +
       a.days.slice().reverse().map((d) => `<tr><td>${esc(d.date)}</td><td class="num">${d.spins}</td><td class="num">${d.wins}</td><td class="num">${d.spins ? Math.round((d.wins / d.spins) * 100) + '%' : '-'}</td></tr>`).join('');
   } catch (e) { console.error(e); }
 }
 $('anDays').onchange = loadAnalytics;
+
+// ---------- wins by reward: its own period ----------
+const localDay = (offset = 0) => new Date(Date.now() - new Date().getTimezoneOffset() * 60000 + offset * 86400000).toISOString().slice(0, 10);
+function wrRange() {
+  const p = $('wrPeriod').value, today = localDay();
+  if (p === 'custom') return [$('wrFrom').value, $('wrTo').value];
+  if (p === '1') return [localDay(-1), localDay(-1)];
+  if (p === 'month') return [today.slice(0, 8) + '01', today];
+  if (p === 'all') return [localDay(-365), today];
+  return [localDay(-Math.max(0, Number(p) - 1)), today];
+}
+async function loadWinsByReward() {
+  const [from, to] = wrRange();
+  if (!from || !to) return;
+  if (from > to) return toast('"From" must be on or before "To"', 'bad');
+  try {
+    const a = await api(`/api/admin/wins-by-reward?from=${from}&to=${to}`);
+    const opt = $('wrPeriod').selectedOptions[0];
+    $('wrLabel').textContent = (from === to ? shortDate(from) : `${shortDate(from)} – ${shortDate(to)}`) + (opt.value === 'custom' ? '' : ` (${opt.textContent})`);
+    const total = Object.values(a.byReward).reduce((x, y) => x + y, 0);
+    const rows = Object.entries(a.byReward).sort((x, y) => y[1] - x[1]);
+    $('anRewards').innerHTML = '<tr><th>Reward</th><th class="num">Wins</th><th>Share</th></tr>' + (rows.length
+      ? rows.map(([n, c]) => { const p = Math.round((c / total) * 100); return `<tr><td>${esc(n)}</td><td class="num">${c}</td><td><div class="meter"><i><b style="width:${p}%"></b></i><span>${p}%</span></div></td></tr>`; }).join('') +
+        `<tr><td><b>Total</b></td><td class="num"><b>${total}</b></td><td></td></tr>`
+      : '<tr><td colspan="3" class="empty">No wins in this period.</td></tr>');
+  } catch (e) { fail(e); }
+}
+$('wrPeriod').onchange = () => {
+  const custom = $('wrPeriod').value === 'custom';
+  $('wrRange').hidden = !custom;
+  if (custom && !$('wrFrom').value) { const [f, t] = [localDay(-13), localDay()]; $('wrFrom').value = f; $('wrTo').value = t; }
+  loadWinsByReward();
+};
+$('wrFrom').onchange = $('wrTo').onchange = loadWinsByReward;
 
 // ---------- games gallery ----------
 function buildGallery() {
@@ -244,6 +277,112 @@ async function download(file) {
     toast('Downloaded - paste it into CleverTap Custom HTML', 'ok');
   } catch (e) { fail(e); }
 }
+
+// ---------- campaigns: which template each published campaign uses, with full version history ----------
+const RUNNING_MS = 2 * 86400000; // opened by a customer within 2 days = still running in CleverTap
+const tplName = (fileOrName) => (TEMPLATES.find((t) => t.file === fileOrName) || {}).name || fileOrName || 'Unknown template';
+const ago = (iso) => {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  return m < 60 ? `${Math.max(1, m)} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+const fmtWhen = (iso) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+let campaigns = [];
+async function loadCampaigns() {
+  try { campaigns = await api('/api/admin/campaigns'); renderCampaigns(); }
+  catch (e) { $('campRunning').innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
+}
+function campaignCard(c) {
+  const seen = c.last_seen_at ? Date.now() - Date.parse(c.last_seen_at) : null;
+  const status = seen === null ? '<span class="tag warn">Not opened yet</span>'
+    : seen < RUNNING_MS ? '<span class="tag ok">Running</span>' : '<span class="tag neutral">Past</span>';
+  const seenText = seen === null ? 'No customer has opened it yet - is the loader pasted into CleverTap?'
+    : seen < RUNNING_MS ? `Last opened by a customer ${ago(c.last_seen_at)}` : `Last opened by a customer on ${fmtWhen(c.last_seen_at)}`;
+  const studio = `#studio?t=${encodeURIComponent(c.template_file || TEMPLATES[0].file)}&c=${encodeURIComponent(c.id)}&v=${c.version}`;
+  return `<article class="card camp-card" data-id="${esc(c.id)}">
+    <div class="camp-head">
+      <div><h3>${esc(c.name || c.id)}</h3><span class="mono muted">${esc(c.id)}</span></div>${status}
+    </div>
+    <dl class="camp-meta">
+      <div><dt>Current template</dt><dd><b>${esc(tplName(c.template_file || c.template))}</b> <span class="tag brand">v${c.version}</span></dd></div>
+      <div><dt>Last published</dt><dd>${esc(fmtWhen(c.published_at))} by ${esc(c.published_by)}</dd></div>
+      <div><dt>Customers</dt><dd>${esc(seenText)}</dd></div>
+      <div><dt>Templates used</dt><dd class="camp-used">${c.templates_used.map((t) => `<span class="tag neutral">${esc(tplName(t))}</span>`).join(' ')}</dd></div>
+    </dl>
+    <div class="camp-actions">
+      <button class="btn secondary sm" data-camp-preview="${c.version}">Preview live version</button>
+      <a class="btn primary sm admin-only" href="${studio}">Edit in Studio</a>
+      <button class="btn secondary sm admin-only" data-camp-rename>Rename</button>
+      <button class="btn ghost sm" data-camp-history aria-expanded="false">Version history</button>
+    </div>
+    <div class="camp-history" hidden></div>
+  </article>`;
+}
+function renderCampaigns() {
+  const running = campaigns.filter((c) => c.last_seen_at && Date.now() - Date.parse(c.last_seen_at) < RUNNING_MS);
+  const other = campaigns.filter((c) => !running.includes(c));
+  $('campRunning').innerHTML = running.length ? running.map(campaignCard).join('') : '<p class="empty">No campaign has been opened by a customer in the last 2 days.</p>';
+  $('campPast').innerHTML = other.length ? other.map(campaignCard).join('') : '<p class="empty">None.</p>';
+  $('campCount').textContent = campaigns.length
+    ? `${fmtNum(campaigns.length)} published campaign${campaigns.length === 1 ? '' : 's'} · ${fmtNum(running.length)} running.`
+    : 'No campaigns published yet - publish one from the Studio.';
+}
+async function showHistory(card, open) {
+  const box = card.querySelector('.camp-history'), btn = card.querySelector('[data-camp-history]');
+  box.hidden = !open;
+  btn.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  box.innerHTML = '<p class="empty"><span class="skeleton"></span></p>';
+  const c = campaigns.find((x) => x.id === card.dataset.id);
+  try {
+    const list = await api('/api/admin/campaigns/' + encodeURIComponent(c.id) + '/versions');
+    box.innerHTML = '<div class="table-wrap"><table><tr><th>Version</th><th>Template</th><th>Published</th><th>By</th><th>What</th><th></th></tr>' + list.map((v) => `<tr>
+      <td><b>v${v.version}</b>${v.version === c.version ? ' <span class="tag ok">live</span>' : ''}</td>
+      <td>${esc(tplName(v.template_file || v.template))}</td>
+      <td style="white-space:nowrap">${esc(fmtWhen(v.published_at))}</td>
+      <td>${esc(v.published_by || '-')}</td>
+      <td class="muted">${esc(v.action)}</td>
+      <td class="num" style="white-space:nowrap"><button class="btn ghost sm" data-camp-preview="${v.version}">Preview</button>${v.version === c.version ? ''
+        : ` <button class="btn secondary sm admin-only" data-camp-restore="${v.version}">Make live</button>`}</td>
+    </tr>`).join('') + '</table></div>' +
+      (list.length < c.version ? `<p class="help" style="padding:8px 0 0">Versions before v${list[list.length - 1].version} were published before history was kept.</p>` : '');
+  } catch (e) { box.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
+}
+function htmlPreviewModal(title, html) {
+  const back = document.createElement('div');
+  back.className = 'modal-back';
+  back.innerHTML = `<div class="modal-box wide" role="dialog" aria-modal="true" aria-label="Preview ${esc(title)}">
+    <div class="preview-close"><span>${esc(title)} · demo round</span><button aria-label="Close preview">✕</button></div>
+    <div class="preview-phone"><iframe title="${esc(title)} preview"></iframe></div></div>`;
+  back.querySelector('iframe').srcdoc = html;
+  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('.preview-close button')) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(back);
+  back.querySelector('.preview-close button').focus();
+}
+$('view-campaigns').addEventListener('click', async (e) => {
+  const card = e.target.closest('.camp-card'); if (!card) return;
+  const c = campaigns.find((x) => x.id === card.dataset.id);
+  const h = e.target.closest('[data-camp-history]'), p = e.target.closest('[data-camp-preview]');
+  const r = e.target.closest('[data-camp-restore]'), n = e.target.closest('[data-camp-rename]');
+  if (h) showHistory(card, h.getAttribute('aria-expanded') !== 'true');
+  if (p) busy(p, () => api(`/api/admin/campaigns/${encodeURIComponent(c.id)}/versions/${p.dataset.campPreview}`)).then((v) =>
+    // The published page waits for the loader to fill in the customer; '#' = no customer, so it plays a demo round.
+    htmlPreviewModal(`${c.name || c.id} v${v.version} - ${tplName(v.template_file || v.template)}`, v.html.split('__STW_IDENTITY__').join('#').split('__STW_TOKEN__').join('#'))).catch(fail);
+  if (r) {
+    const v = Number(r.dataset.campRestore);
+    if (!(await confirmBox({ title: `Make v${v} live again?`, body: `Every customer who opens "${c.name || c.id}" will see version ${v} straight away. It is saved as a new version, so nothing in the history is lost.`, ok: 'Make live' }))) return;
+    busy(r, () => send(`/api/admin/campaigns/${encodeURIComponent(c.id)}/restore`, 'POST', { version: v }))
+      .then(async (out) => { toast(`Version ${v} is live again (now v${out.version})`, 'ok'); await loadCampaigns(); showHistory($('view-campaigns').querySelector(`.camp-card[data-id="${CSS.escape(c.id)}"]`), true); }).catch(fail);
+  }
+  if (n) {
+    const name = prompt('Campaign name', c.name || c.id);
+    if (name === null || !name.trim()) return;
+    busy(n, () => send(`/api/admin/campaigns/${encodeURIComponent(c.id)}/name`, 'PUT', { name })).then(() => { toast('Campaign renamed', 'ok'); loadCampaigns(); }).catch(fail);
+  }
+});
+$('campRefresh').onclick = () => busy($('campRefresh'), loadCampaigns);
 
 // ---------- prizes: segments with live win chances ----------
 function setRewards(rw) {
@@ -313,9 +452,28 @@ async function pickFile(f) {
   const rows = csvText.split(/\r?\n/).filter((l) => l.trim()).length - (/^\s*code\s*,/i.test(csvText) ? 1 : 0);
   $('fileName').innerHTML = `<b>${esc(f.name)}</b> · ${fmtNum(rows)} voucher${rows === 1 ? '' : 's'}`;
   $('fileInfo').hidden = false;
+  $('uploadResult').hidden = true;
   $('upload').disabled = false;
 }
 function clearFile() { csvText = null; $('csvFile').value = ''; $('fileInfo').hidden = true; $('upload').disabled = true; }
+// Keeps the upload outcome on screen (the toast alone is easy to miss when nothing was added).
+function showUploadResult(r) {
+  const by = Object.entries(r.byReward || {}), skipped = r.skipped || [], more = r.duplicates + r.invalid - skipped.length;
+  const el = $('uploadResult');
+  el.className = 'alert upload-result ' + (r.added || r.replace ? 'info' : 'warn');
+  el.innerHTML = `<b>${r.added ? `Added ${fmtNum(r.added)} voucher${r.added === 1 ? '' : 's'}` : r.replace ? 'Prize list updated' : 'No vouchers were added'}</b>` +
+    (r.duplicates ? ` · ${fmtNum(r.duplicates)} duplicate${r.duplicates === 1 ? '' : 's'} skipped` : '') +
+    (r.invalid ? ` · ${fmtNum(r.invalid)} invalid row${r.invalid === 1 ? '' : 's'}` : '') +
+    (by.length ? '<ul>' + by.map(([n, c]) => `<li>${esc(n)}: +${fmtNum(c)}${(r.newRewards || []).includes(n) ? ' <span class="tag warn">new on wheel</span>' : ''}</li>`).join('') + '</ul>' : '') +
+    ((r.newRewards || []).length ? '<div>New rewards start with weight 1 and no daily limit - check them in the table above.</div>' : '') +
+    (r.replace ? `<div>Replaced: ${fmtNum(r.kept)} kept, ${fmtNum(r.removed)} unused voucher${r.removed === 1 ? '' : 's'} removed` +
+      (Object.keys(r.removedByReward || {}).length ? ' (' + Object.entries(r.removedByReward).map(([n, c]) => `${esc(n)} ${fmtNum(c)}`).join(', ') + ')' : '') + '.' +
+      ((r.hiddenRewards || []).length ? ` Removed from the prize list: ${r.hiddenRewards.map(esc).join(', ')}.` : '') + '</div>' : '') +
+    (skipped.length ? `<details${r.added ? '' : ' open'}><summary>Skipped rows</summary><ul>` +
+      skipped.map((s) => `<li>Row ${s.row}${s.code ? ` (<span class="mono">${esc(s.code)}</span>)` : ''}: ${esc(s.reason)}</li>`).join('') +
+      (more > 0 ? `<li>…and ${fmtNum(more)} more</li>` : '') + '</ul></details>' : '');
+  el.hidden = false;
+}
 $('csvFile').onchange = () => pickFile($('csvFile').files[0]);
 $('clearFile').onclick = (e) => { e.preventDefault(); clearFile(); };
 const dz = $('dropzone');
@@ -323,16 +481,55 @@ dz.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') 
 ['dragenter', 'dragover'].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add('over'); }));
 ['dragleave', 'drop'].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove('over'); }));
 dz.addEventListener('drop', (e) => pickFile(e.dataTransfer.files[0]));
-$('upload').onclick = () => {
+$('upload').onclick = async () => {
   if (!csvText) return;
-  busy($('upload'), () => api('/api/admin/vouchers', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csvText }))
+  const replace = $('replaceMode').checked;
+  if (replace && !(await confirmBox({
+    title: 'Replace current prizes?',
+    body: 'Unused vouchers that are not in this file will be removed, and prizes not in this file will be taken off the wheel and this page (re-uploading their vouchers brings them back). Vouchers already won stay as they are.',
+    ok: 'Replace', danger: true,
+  }))) return;
+  busy($('upload'), () => api('/api/admin/vouchers' + (replace ? '?mode=replace' : ''), { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csvText }))
     .then(async (r) => {
-      toast(`Added ${fmtNum(r.added)} vouchers` + (r.duplicates ? ` · ${r.duplicates} duplicates skipped` : '') + (r.invalid ? ` · ${r.invalid} invalid rows` : ''), r.added ? 'ok' : '');
+      toast((r.replace ? 'Prizes replaced · ' : '') + `Added ${fmtNum(r.added)} vouchers` + (r.duplicates ? ` · ${r.duplicates} duplicates skipped` : '') + (r.invalid ? ` · ${r.invalid} invalid rows` : ''), r.added || r.replace ? 'ok' : '');
       clearFile();
+      showUploadResult(r);
       const [rw] = await Promise.all([api('/api/admin/rewards'), refreshSummary()]);
       setRewards(rw);
     }).catch(fail);
 };
+
+// ---------- voucher usage: uploaded vs given out vs left over ----------
+async function loadVoucherReport() {
+  try {
+    const rep = await api('/api/admin/voucher-report'), t = rep.totals;
+    const pct = (a, b) => (b ? Math.round((a / b) * 100) + '%' : '-');
+    $('vrAsOf').textContent = 'As of ' + new Date(rep.as_of).toLocaleString() + ' · every reward and voucher ever uploaded.';
+    $('vrStats').innerHTML = [
+      ['Uploaded', fmtNum(t.uploaded), 'all vouchers'],
+      ['Given out', fmtNum(t.given_out), pct(t.given_out, t.uploaded) + ' used'],
+      ['Left for next campaign', fmtNum(t.unused + t.removed), `${fmtNum(t.unused)} unused · ${fmtNum(t.removed)} removed`],
+      [`Expiring in ${rep.expiring_days} days`, fmtNum(t.expiring_soon), 'unused, still valid'],
+      ['Expired', fmtNum(t.expired + t.expired_unused), 'never given out'],
+    ].map(([l, v, s]) => `<div class="kpi"><span>${l}</span><b>${v}</b><small>${esc(s)}</small></div>`).join('');
+    const n = (v, cls) => (v ? `<span class="${cls || ''}">${fmtNum(v)}</span>` : '<span class="muted">0</span>');
+    $('vrTable').innerHTML = '<tr><th>Reward</th><th>Value</th><th class="num">Uploaded</th><th class="num">Given out</th><th>Used</th><th class="num">Unused</th><th class="num">Removed</th><th class="num">Expired</th><th class="num">Left for next</th><th>Next expiry</th></tr>' + (rep.rewards.length
+      ? rep.rewards.map((r) => {
+        const used = r.uploaded ? Math.round((r.given_out / r.uploaded) * 100) : 0;
+        return `<tr>
+          <td><b>${esc(r.name)}</b>${r.on_wheel ? '' : ' <span class="tag neutral">not on wheel</span>'}</td>
+          <td>${esc(r.value || '-')}</td>
+          <td class="num">${fmtNum(r.uploaded)}</td><td class="num">${fmtNum(r.given_out)}</td>
+          <td><div class="meter"><i><b style="width:${used}%"></b></i><span>${used}%</span></div></td>
+          <td class="num">${n(r.unused)}${r.expiring_soon ? ` <span class="tag warn" title="Expire within ${rep.expiring_days} days">${fmtNum(r.expiring_soon)} expiring</span>` : ''}</td>
+          <td class="num">${n(r.removed)}</td><td class="num">${n(r.expired + r.expired_unused)}</td>
+          <td class="num"><b>${fmtNum(r.unused + r.removed)}</b></td>
+          <td style="white-space:nowrap">${esc(r.next_expiry || '-')}</td></tr>`;
+      }).join('') + `<tr><td><b>Total</b></td><td></td><td class="num"><b>${fmtNum(t.uploaded)}</b></td><td class="num"><b>${fmtNum(t.given_out)}</b></td><td><b>${pct(t.given_out, t.uploaded)}</b></td><td class="num"><b>${fmtNum(t.unused)}</b></td><td class="num"><b>${fmtNum(t.removed)}</b></td><td class="num"><b>${fmtNum(t.expired + t.expired_unused)}</b></td><td class="num"><b>${fmtNum(t.unused + t.removed)}</b></td><td></td></tr>`
+      : '<tr><td colspan="10" class="empty">No vouchers uploaded yet.</td></tr>');
+  } catch (e) { fail(e); }
+}
+$('vrRefresh').onclick = () => busy($('vrRefresh'), loadVoucherReport);
 
 // ---------- rules: schedule + limits ----------
 $('sc_days').innerHTML = DAYS.map(([d, n]) => `<label class="chip"><input type="checkbox" value="${d}"><span>${n}</span></label>`).join('');
